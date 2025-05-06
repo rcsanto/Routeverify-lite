@@ -36,6 +36,34 @@ if route_file and gps_file:
 
     st.subheader("Parsed Route Sheet")
     st.dataframe(route_df)
+if route_file is not None:
+    # If CSV, load it directly
+    if route_file.name.endswith(".csv"):
+        route_df = pd.read_csv(route_file)
+
+    # If image or PDF, extract text and parse
+    elif route_file.name.lower().endswith((".jpg", ".jpeg", ".png", ".pdf")):
+        extracted_text = extract_text_from_file(route_file)
+        
+        # Very basic parse for now (this part will improve)
+        lines = extracted_text.split("\n")
+        rows = []
+        for line in lines:
+            parts = line.strip().split()
+            if len(parts) >= 5:
+                # Adjust index positions based on real format
+                rows.append({
+                    "ITSA": parts[0],
+                    "SIDE": parts[1],
+                    "STREET": parts[2],
+                    "FROM": parts[3],
+                    "TO": parts[4]
+                })
+
+        route_df = pd.DataFrame(rows)
+
+    st.subheader("Parsed Route Sheet")
+    st.dataframe(route_df)
 
     st.subheader("Parsed GPS Trail")
     st.dataframe(gps_df)
