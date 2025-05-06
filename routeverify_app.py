@@ -6,7 +6,8 @@ openai.api_key = st.secrets["OPENAI_API_KEY"]
 
 st.title("🛻 RouteVerify Lite - DSNY Demo")
 
-route_file = st.file_uploader("Upload DS659 Route Sheet (CSV)", type=["csv"])
+route_file = st.file_uploaderroute_file = st.file_uploader("Upload DS659 Route Sheet (PDF, JPG, PNG)", type=["pdf", "jpg", "jpeg", "png"])
+
 gps_file = st.file_uploader("Upload Rastrac GPS Trail (CSV)", type=["csv"])
 
 if route_file and gps_file:
