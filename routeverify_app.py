@@ -40,7 +40,8 @@ if route_file and gps_file:
 if route_file is not None:
     # If CSV, load it directly
     if route_file.name.endswith(".csv"):
-        route_df = pd.read_csv(route_file)
+        route_df = pd.read_csv(route_file, encoding="utf-8", errors="ignore")
+
 
     # If image or PDF, extract text and parse
     elif route_file.name.lower().endswith((".jpg", ".jpeg", ".png", ".pdf")):
