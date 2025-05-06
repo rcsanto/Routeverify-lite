@@ -1,3 +1,7 @@
 streamlit
 pandas
 openai
+pytesseract
+Pillow
+pdf2image
+PyMuPDF
