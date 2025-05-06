@@ -23,6 +23,7 @@ def extract_text_from_file(file):
         return pytesseract.image_to_string(image)
 
     return ""
+"
 
 
 openai.api_key = st.secrets["OPENAI_API_KEY"]
