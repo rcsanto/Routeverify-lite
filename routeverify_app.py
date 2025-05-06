@@ -47,7 +47,22 @@ if route_file is not None:
 
     # If image or PDF, extract text and parse
     elif route_file.name.lower().endswith((".jpg", ".jpeg", ".png", ".pdf")):
-        def extract_text_from_file(file):
+   def extract_text_from_file(file):
+    from PIL import Image
+    import pytesseract
+    from pdf2image import convert_from_bytes
+
+    if file.name.lower().endswith(".pdf"):
+        images = convert_from_bytes(file.read())
+        text = ""
+        for image in images:
+            text += pytesseract.image_to_string(image)
+        return text
+    elif file.name.lower().endswith((".jpg", ".jpeg", ".png")):
+        image = Image.open(file)
+        return pytesseract.image_to_string(image)
+    return ""
+     def extract_text_from_file(file):
     from PIL import Image
     from pdf2image import convert_from_bytes
     import pytesseract
