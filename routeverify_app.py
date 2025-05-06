@@ -1,6 +1,26 @@
 import streamlit as st
 import pandas as pd
 import openai
+import pytesseract
+from PIL import Image
+import fitz  # PyMuPDF
+from pdf2image import convert_from_bytes
+
+def extract_text_from_file(file):
+    # If it's a PDF
+    if file.name.endswith(".pdf"):
+        images = convert_from_bytes(file.read())
+        text = ""
+        for image in images:
+            text += pytesseract.image_to_string(image)
+        return text
+    
+    # If it's an image
+    elif file.name.lower().endswith((".jpg", ".jpeg", ".png")):
+        image = Image.open(file)
+        return pytesseract.image_to_string(image)
+    
+    return ""
 
 openai.api_key = st.secrets["OPENAI_API_KEY"]
 
