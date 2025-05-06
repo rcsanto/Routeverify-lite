@@ -16,12 +16,13 @@ def extract_text_from_file(file):
         return text
     
     # If it's an image
-    elif file.name.lower().endswith((".jpg", ".jpeg", ".png")):
-    try:   
-    image = Image.open(file)
-    return pytesseract.image_to_string(image)
-except Exception as e:
-    return f"Image load error: {e}"
+   elif file.name.lower().endswith((".jpg", ".jpeg", ".png")):
+    try:
+        image = Image.open(file)
+        return pytesseract.image_to_string(image)
+    except Exception as e:
+        return f"Image load error: {e}"
+ 
 
     
     return ""
