@@ -31,7 +31,8 @@ route_file = st.file_uploaderroute_file = st.file_uploader("Upload DS659 Route S
 gps_file = st.file_uploader("Upload Rastrac GPS Trail (CSV)", type=["csv"])
 
 if route_file and gps_file:
-    route_df = pd.read_csv(route_file)
+   route_df = pd.read_csv(route_file, encoding="utf-8", errors="ignore")
+
     gps_df = pd.read_csv(gps_file)
 
     st.subheader("Parsed Route Sheet")
