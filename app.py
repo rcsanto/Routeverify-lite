@@ -48,4 +48,32 @@ def extract_text_with_ocr(file_path):
 if route_file:
     with tempfile.NamedTemporaryFile(delete=False, suffix=route_file.name[-4:]) as tmp:
         tmp.write(route_file.getvalue())
-        tmp_path_
+        tmp_path = tmp.name
+
+    st.info("⏳ Running Claude OCR...")
+
+    try:
+        route_text = extract_text_from_pdf(tmp_path)
+        if not route_text.strip():
+            st.warning("⚠️ PDF appears blank. Trying OCR fallback...")
+            route_text = extract_text_with_ocr(tmp_path)
+
+        if not route_text.strip():
+            st.error("❌ No readable text found — even with OCR fallback.")
+            st.stop()
+
+        msg = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1024,
+            temperature=0,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"""
+This is a DS-659 route sheet in raw text. 
+Extract the section, route number, truck number, and all ITSA numbers. Return JSON only like this:
+
+{{
+  "section": "___",
+  "route": "___",
+  "truck_number":_
