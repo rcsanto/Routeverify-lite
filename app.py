@@ -31,7 +31,7 @@ def call_claude_inline(file_path):
         encoded = base64.b64encode(f.read()).decode("utf-8")
 
     msg = client.messages.create(
-        model="claude-3-sonnet-20240229",
+        model="claude-sonnet-4-20250514",  # ✅ correct model for your account
         max_tokens=1024,
         temperature=0,
         messages=[
@@ -43,7 +43,7 @@ def call_claude_inline(file_path):
                         "text": (
                             "Below is a base64-encoded DS-659 route sheet. "
                             "Decode it, extract the section, route number, truck number, and ITSA numbers. "
-                            "Return JSON only:\n"
+                            "Return JSON only in this format:\n"
                             '{ "section": "___", "route": "___", "truck_number": "___", "itsas": ["___", ...] }'
                         )
                     },
@@ -90,4 +90,4 @@ if claude_json:
     st.download_button("📥 Download Result CSV", data=csv, file_name="smartscan_output.csv")
 
 st.markdown("---")
-st.caption("Built for NYC DSNY Supervisors · RouteVerify Lite v1.0 · Claude OCR (Inline Safe Mode)")
+st.caption("Built for NYC DSNY Supervisors · RouteVerify Lite v1.0 · Claude OCR (Sonnet-4 Model)")
