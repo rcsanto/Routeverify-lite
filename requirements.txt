@@ -4,7 +4,6 @@ openai
 pytesseract
 Pillow
 pdf2image
-PyMuPDF
 python-dotenv
 anthropic
 pypdf
