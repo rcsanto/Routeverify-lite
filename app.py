@@ -4,7 +4,7 @@ import os
 import tempfile
 from dotenv import load_dotenv
 import anthropic
-from PyPDF2 import PdfReader
+from pypdf2 import PdfReader  # ✅ Lowercase to avoid ModuleNotFoundError
 
 load_dotenv()
 client = anthropic.Anthropic(api_key=os.getenv("CLAUDE_API_KEY"))
