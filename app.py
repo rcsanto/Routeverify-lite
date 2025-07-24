@@ -1,64 +1,29 @@
 import streamlit as st
-from PIL import Image
-from pdf2image import convert_from_bytes
-import pytesseract
-import pandas as pd
-import io
 
-# Streamlit page setup
-st.set_page_config(page_title="RouteVerify Lite", layout="centered")
-st.title("RouteVerify Lite - DSNY Demo")
+def main():
+    st.set_page_config(page_title="RouteVerify Lite - DSNY Demo", layout="wide")
+    
+    st.title("📋 RouteVerify Lite - DSNY Demo")
 
-# Upload DS-659 route sheet
-st.header("Upload DS-659 Route Sheet (PDF, JPG, PNG)")
-route_file = st.file_uploader("Upload Route Sheet", type=["pdf", "jpg", "jpeg", "png"])
+    st.markdown("Upload **DS-659 Route Sheet** and **Rastrac GPS Trail** to begin verification.")
 
-# Upload GPS trail file
-st.header("Upload Rastrac GPS Trail (CSV)")
-gps_file = st.file_uploader("Upload Rastrac GPS File", type=["csv"])
+    st.header("📄 Upload DS-659 Route Sheet (PDF, JPG, PNG)")
+    route_file = st.file_uploader("Upload Route Sheet", type=["pdf", "jpg", "jpeg", "png"])
 
-# Text extraction helper
-def extract_text_from_file(file):
-    if file.name.lower().endswith(".pdf"):
-        try:
-            images = convert_from_bytes(file.read())
-            text = ""
-            for image in images:
-                text += pytesseract.image_to_string(image)
-            return text
-        except Exception as e:
-            return f"Failed to process route sheet: {str(e)}"
+    st.header("📍 Upload Rastrac GPS Trail (CSV)")
+    gps_file = st.file_uploader("Upload Rastrac GPS File", type=["csv"])
 
-    elif file.name.lower().endswith((".jpg", ".jpeg", ".png")):
-        try:
-            image = Image.open(file)
-            return pytesseract.image_to_string(image)
-        except Exception as e:
-            return f"Failed to process image: {str(e)}"
+    if route_file is not None and gps_file is not None:
+        st.success("✅ Both files uploaded. Running SmartScan+ analysis...")
 
-    return "Unsupported file type."
+        # Here you would place your SmartScan processing logic
+        # For example: result = process_route_verification(route_file, gps_file)
+        # st.dataframe(result)
 
-# Display extracted route text
-if route_file:
-    with st.expander("📄 Extracted Route Sheet Text"):
-        extracted_text = extract_text_from_file(route_file)
-        if "Failed" in extracted_text:
-            st.error(extracted_text)
-        else:
-            st.text_area("Extracted Text", extracted_text, height=300)
+        st.info("🚧 SmartScan engine not yet implemented in this demo build.")
 
-# Display GPS data table
-if gps_file:
-    try:
-        gps_df = pd.read_csv(gps_file)
-        st.success("✅ GPS File Uploaded Successfully")
-        st.dataframe(gps_df.head())
-    except Exception as e:
-        st.error(f"Failed to process GPS CSV: {str(e)}")
+    st.markdown("---")
+    st.caption("Built for NYC DSNY supervisors · RouteVerify Lite v1.0")
 
-# Entry point for Render to run the app
 if __name__ == "__main__":
-    import streamlit.web.cli as stcli
-    import sys
-    sys.argv = ["streamlit", "run", "app.py", "--server.port=10000", "--server.address=0.0.0.0"]
-    sys.exit(stcli.main())
+    main()
