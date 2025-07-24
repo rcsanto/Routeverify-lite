@@ -4,7 +4,10 @@ import os
 import tempfile
 from dotenv import load_dotenv
 import anthropic
-from pypdf import PdfReader  # ✅ FINAL FIX: Correct lowercase import
+from pypdf import PdfReader
+from pdf2image import convert_from_path
+import pytesseract
+import json
 
 load_dotenv()
 client = anthropic.Anthropic(api_key=os.getenv("CLAUDE_API_KEY"))
@@ -33,68 +36,16 @@ def extract_text_from_pdf(file_path):
         text = page.extract_text()
         if text:
             all_text += text
-    return all_text
+    return all_text.strip()
 
-def call_claude_text_ocr(file_path):
-    route_text = extract_text_from_pdf(file_path)
-
-    msg = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=1024,
-        temperature=0,
-        messages=[
-            {
-                "role": "user",
-                "content": f"""
-This is a DS-659 route sheet in raw text. 
-Extract the section, route number, truck number, and all ITSA numbers. Return JSON only like this:
-
-{{
-  "section": "___",
-  "route": "___",
-  "truck_number": "___",
-  "itsas": ["___", ...]
-}}
-
-Text:
-{route_text}
-"""
-            }
-        ]
-    )
-
-    for block in msg.content:
-        if block.type == "text":
-            return block.text.strip()
+def extract_text_with_ocr(file_path):
+    images = convert_from_path(file_path)
+    text = ""
+    for image in images:
+        text += pytesseract.image_to_string(image)
+    return text.strip()
 
 if route_file:
     with tempfile.NamedTemporaryFile(delete=False, suffix=route_file.name[-4:]) as tmp:
         tmp.write(route_file.getvalue())
-        tmp_path = tmp.name
-
-    st.info("⏳ Running Claude OCR...")
-    try:
-        raw_json = call_claude_text_ocr(tmp_path)
-        st.success("✅ Claude returned JSON:")
-        st.code(raw_json, language="json")
-        claude_json = eval(raw_json)
-    except Exception as e:
-        st.error(f"Claude failed: {e}")
-
-if claude_json:
-    st.subheader("🧪 SmartScan+ Result (Simulated)")
-    data = []
-    for i, itsa in enumerate(claude_json["itsas"]):
-        data.append({
-            "ITSA": itsa,
-            "Status": "✅ Verified" if i % 2 == 0 else "❌ Missed",
-            "Notes": "" if i % 2 == 0 else "No GPS coverage"
-        })
-    df = pd.DataFrame(data)
-    st.dataframe(df, use_container_width=True)
-
-    csv = df.to_csv(index=False).encode("utf-8")
-    st.download_button("📥 Download Result CSV", data=csv, file_name="smartscan_output.csv")
-
-st.markdown("---")
-st.caption("Built for NYC DSNY Supervisors · RouteVerify Lite v1.0 · Claude OCR (Text Mode)")
+        tmp_path_
