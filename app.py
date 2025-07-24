@@ -1,10 +1,10 @@
 import streamlit as st
 import pandas as pd
 import os
-import base64
 import tempfile
 from dotenv import load_dotenv
 import anthropic
+from PyPDF2 import PdfReader
 
 load_dotenv()
 client = anthropic.Anthropic(api_key=os.getenv("CLAUDE_API_KEY"))
@@ -26,32 +26,39 @@ gps_file = st.file_uploader("Upload Rastrac GPS File", type=["csv"])
 
 claude_json = {}
 
-def call_claude_inline(file_path):
-    with open(file_path, "rb") as f:
-        encoded = base64.b64encode(f.read()).decode("utf-8")
+def extract_text_from_pdf(file_path):
+    reader = PdfReader(file_path)
+    all_text = ""
+    for page in reader.pages:
+        text = page.extract_text()
+        if text:
+            all_text += text
+    return all_text
+
+def call_claude_text_ocr(file_path):
+    route_text = extract_text_from_pdf(file_path)
 
     msg = client.messages.create(
-        model="claude-sonnet-4-20250514",  # ✅ correct model for your account
+        model="claude-sonnet-4-20250514",
         max_tokens=1024,
         temperature=0,
         messages=[
             {
                 "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": (
-                            "Below is a base64-encoded DS-659 route sheet. "
-                            "Decode it, extract the section, route number, truck number, and ITSA numbers. "
-                            "Return JSON only in this format:\n"
-                            '{ "section": "___", "route": "___", "truck_number": "___", "itsas": ["___", ...] }'
-                        )
-                    },
-                    {
-                        "type": "text",
-                        "text": encoded
-                    }
-                ]
+                "content": f"""
+This is a DS-659 route sheet in raw text. 
+Extract the section, route number, truck number, and all ITSA numbers. Return JSON only like this:
+
+{{
+  "section": "___",
+  "route": "___",
+  "truck_number": "___",
+  "itsas": ["___", ...]
+}}
+
+Text:
+{route_text}
+"""
             }
         ]
     )
@@ -67,7 +74,7 @@ if route_file:
 
     st.info("⏳ Running Claude OCR...")
     try:
-        raw_json = call_claude_inline(tmp_path)
+        raw_json = call_claude_text_ocr(tmp_path)
         st.success("✅ Claude returned JSON:")
         st.code(raw_json, language="json")
         claude_json = eval(raw_json)
@@ -90,4 +97,4 @@ if claude_json:
     st.download_button("📥 Download Result CSV", data=csv, file_name="smartscan_output.csv")
 
 st.markdown("---")
-st.caption("Built for NYC DSNY Supervisors · RouteVerify Lite v1.0 · Claude OCR (Sonnet-4 Model)")
+st.caption("Built for NYC DSNY Supervisors · RouteVerify Lite v1.0 · Claude OCR (Text Mode)")
