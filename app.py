@@ -16,15 +16,21 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# Initialize client — use env var if set, otherwise prompt user in sidebar
-_api_key = os.getenv("CLAUDE_API_KEY", "")
-if not _api_key:
-    with st.sidebar:
-        st.warning("No API key in environment")
-        _api_key = st.text_input("Anthropic API Key", type="password", help="Paste your sk-ant-... key here")
-    if not _api_key:
-        st.info("Enter your Anthropic API key in the sidebar to continue.")
-        st.stop()
+# Always show API key input in sidebar — env var used as default if available
+_env_key = os.getenv("CLAUDE_API_KEY", "")
+with st.sidebar:
+    st.header("Configuration")
+    debug_mode = st.checkbox("Debug Mode")
+    _api_key = st.text_input(
+        "Anthropic API Key",
+        value=_env_key,
+        type="password",
+        help="Paste your sk-ant-... key here"
+    )
+
+if not _api_key or not _api_key.startswith("sk-ant"):
+    st.warning("Enter your Anthropic API key in the sidebar to continue.")
+    st.stop()
 
 try:
     client = anthropic.Anthropic(api_key=_api_key)
