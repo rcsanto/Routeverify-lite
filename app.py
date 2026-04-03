@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import tempfile
 import base64
+import io
 from dotenv import load_dotenv
 import anthropic
 from pypdf import PdfReader
@@ -10,6 +11,9 @@ import json
 import logging
 from typing import Dict, List, Optional
 import re
+import openpyxl
+from openpyxl import load_workbook
+from copy import copy
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -196,6 +200,49 @@ def process_pdf_with_claude(file_bytes: bytes) -> Optional[Dict]:
     except Exception as e:
         st.error(f"PDF processing error: {e}")
         return None
+
+
+# ─── WORK LEFT OUT — DS-659 EXCEL GENERATOR ─────────────────────────────────
+
+TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "ds659_template.xlsx")
+
+def generate_work_left_out(missed_df: pd.DataFrame, route_info: dict) -> bytes:
+    """Fill DS-659 template with missed ITSAs only. Returns Excel bytes."""
+    wb = load_workbook(TEMPLATE_PATH)
+    ws = wb.active
+
+    # Fill header fields
+    section = route_info.get('section', '')
+    route   = route_info.get('route', '')
+    district = route_info.get('district', '')
+    material = route_info.get('material', '')
+    vehicle  = route_info.get('vehicle_type', '')
+
+    ws['A3'] = district or ws['A3'].value
+    ws['D3'] = section or ws['D3'].value
+    ws['H1'] = vehicle or ws['H1'].value
+    ws['J1'] = material or ws['J1'].value
+
+    # Clear existing sample ITSA rows (rows 8–25)
+    for row_num in range(8, 26):
+        for col in ['A', 'B', 'C', 'D', 'H', 'J', 'L', 'M', 'N']:
+            ws[f'{col}{row_num}'] = None
+
+    # Write missed ITSAs starting at row 8
+    for i, (_, r) in enumerate(missed_df.iterrows()):
+        row_num = 8 + i
+        if row_num > 25:
+            break
+        ws[f'A{row_num}'] = section
+        ws[f'B{row_num}'] = r.get('ITSA #', '')
+        ws[f'C{row_num}'] = r.get('Side', 'B')
+        ws[f'D{row_num}'] = r.get('Street', '')
+        ws[f'H{row_num}'] = r.get('From', '')
+        ws[f'J{row_num}'] = r.get('To', '')
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 # ─── GPS CSV PARSING ─────────────────────────────────────────────────────────
@@ -407,12 +454,28 @@ if st.session_state.claude_json and st.session_state.gps_streets:
                 for _, r in missed.iterrows():
                     lines.append(f"  ITSA {r['ITSA #']}: {r['Street']} ({r['From']} → {r['To']})")
 
-            st.download_button(
-                "Download Report",
-                data="\n".join(lines),
-                file_name="routeverify_report.txt",
-                mime="text/plain"
-            )
+            dl_col1, dl_col2 = st.columns(2)
+            with dl_col1:
+                st.download_button(
+                    "📄 Download Report (TXT)",
+                    data="\n".join(lines),
+                    file_name="routeverify_report.txt",
+                    mime="text/plain"
+                )
+            with dl_col2:
+                if not missed.empty and os.path.exists(TEMPLATE_PATH):
+                    try:
+                        wlo_bytes = generate_work_left_out(missed, st.session_state.claude_json)
+                        sec = st.session_state.claude_json.get('section', 'SEC')
+                        route_label = st.session_state.claude_json.get('route', 'RTE')
+                        st.download_button(
+                            "📋 Work Left Out (Excel)",
+                            data=wlo_bytes,
+                            file_name=f"Work_Left_Out_{sec}_{route_label}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
+                    except Exception as e:
+                        st.warning(f"Could not generate Work Left Out: {e}")
 
 elif not st.session_state.claude_json:
     st.info("Upload a DS-659 route sheet to begin.")
