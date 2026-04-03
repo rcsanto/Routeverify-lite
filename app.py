@@ -59,9 +59,32 @@ st.success("Authenticated")
 
 # ─── ROUTE SHEET PARSING (Claude Vision) ────────────────────────────────────
 
+def compress_image(image_bytes: bytes, max_bytes: int = 4_500_000) -> tuple[bytes, str]:
+    """Compress image to fit under Claude's 5MB limit. Returns (bytes, media_type)."""
+    from PIL import Image
+    import io
+    if len(image_bytes) <= max_bytes:
+        return image_bytes, "image/jpeg"
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    quality = 85
+    while quality >= 30:
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality)
+        data = buf.getvalue()
+        if len(data) <= max_bytes:
+            return data, "image/jpeg"
+        quality -= 10
+    # If still too big, resize to half
+    img = img.resize((img.width // 2, img.height // 2), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=75)
+    return buf.getvalue(), "image/jpeg"
+
+
 def process_image_with_claude(image_bytes: bytes, media_type: str) -> Optional[Dict]:
     """Send image directly to Claude vision — handles DS659 photos accurately."""
     try:
+        image_bytes, media_type = compress_image(image_bytes)
         b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
 
         prompt = (
