@@ -4,6 +4,7 @@ import os
 import tempfile
 import base64
 import io
+import zipfile
 from dotenv import load_dotenv
 import anthropic
 from pypdf import PdfReader
@@ -21,9 +22,10 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 st.set_page_config(page_title="RouteVerify - DSNY", layout="wide")
-st.title("RouteVerify Lite — DSNY SI03")
+st.title("RouteVerify Lite — DSNY Supervisor Dashboard")
 
-# Always show API key input in sidebar — env var used as default if available
+# ─── SIDEBAR: API KEY + PIN + CLEAR ROUTES ───────────────────────────────────
+
 _env_key = os.getenv("CLAUDE_API_KEY", "")
 with st.sidebar:
     st.header("Configuration")
@@ -34,6 +36,13 @@ with st.sidebar:
         type="password",
         help="Paste your sk-ant-... key here"
     )
+
+    st.divider()
+    st.subheader("🗑️ Clear All Routes")
+    confirm_clear = st.checkbox("Confirm clear all routes")
+    if st.button("Clear All Routes", disabled=not confirm_clear):
+        st.session_state.routes = []
+        st.rerun()
 
 if not _api_key or not _api_key.startswith("sk-ant"):
     st.warning("Enter your Anthropic API key in the sidebar to continue.")
@@ -60,8 +69,15 @@ if not st.session_state.authenticated:
 
 st.success("Authenticated")
 
+# ─── SESSION STATE INIT ───────────────────────────────────────────────────────
 
-# ─── ROUTE SHEET PARSING (Claude Vision) ────────────────────────────────────
+if 'routes' not in st.session_state:
+    st.session_state.routes = []
+
+if 'detail_open' not in st.session_state:
+    st.session_state.detail_open = {}
+
+# ─── ROUTE SHEET PARSING (Claude Vision) ─────────────────────────────────────
 
 def compress_image(image_bytes: bytes, max_bytes: int = 4_500_000) -> tuple[bytes, str]:
     """Compress image to fit under Claude's 5MB limit. Returns (bytes, media_type)."""
@@ -202,7 +218,7 @@ def process_pdf_with_claude(file_bytes: bytes) -> Optional[Dict]:
         return None
 
 
-# ─── WORK LEFT OUT — DS-659 EXCEL GENERATOR ─────────────────────────────────
+# ─── WORK LEFT OUT — DS-659 EXCEL GENERATOR ──────────────────────────────────
 
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "ds659_template.xlsx")
 
@@ -245,7 +261,7 @@ def generate_work_left_out(missed_df: pd.DataFrame, route_info: dict) -> bytes:
     return buf.getvalue()
 
 
-# ─── GPS CSV PARSING ─────────────────────────────────────────────────────────
+# ─── GPS CSV PARSING ──────────────────────────────────────────────────────────
 
 def parse_rastrac_csv(gps_df: pd.DataFrame) -> set:
     streets_visited = set()
@@ -323,161 +339,321 @@ def verify_itsas_against_gps(itsas: List[Dict], streets_visited: set) -> pd.Data
     return pd.DataFrame(rows)
 
 
-# ─── MAIN UI ─────────────────────────────────────────────────────────────────
+# ─── BOROUGH INFERENCE ────────────────────────────────────────────────────────
 
-col1, col2 = st.columns(2)
+DISTRICT_TO_BOROUGH = {
+    'Q': 'Queens, NY',
+    'M': 'Manhattan, NY',
+    'BX': 'Bronx, NY',
+    'BK': 'Brooklyn, NY',
+    'SI': 'Staten Island, NY',
+}
 
-with col1:
-    st.header("Step 1 — DS-659 Route Sheet")
+def infer_borough(claude_json: dict) -> str:
+    """Infer borough string from district or section code."""
+    district = str(claude_json.get('district', '')).upper().strip()
+    section = str(claude_json.get('section', '')).upper().strip()
+
+    # Try direct district match
+    for key, borough in DISTRICT_TO_BOROUGH.items():
+        if district.startswith(key):
+            return borough
+
+    # Try section prefix (e.g. SI03 → Staten Island)
+    for key, borough in DISTRICT_TO_BOROUGH.items():
+        if section.startswith(key):
+            return borough
+
+    return 'New York, NY'
+
+
+# ─── NAVIGATION LINK BUILDERS ─────────────────────────────────────────────────
+
+def build_maps_url(streets: List[str], borough: str) -> str:
+    """Build a Google Maps multi-stop directions URL."""
+    encoded = "/".join(
+        s.replace(' ', '+') + ',+' + borough.replace(' ', '+').replace(',', '')
+        for s in streets
+    )
+    return f"https://www.google.com/maps/dir/My+Location/{encoded}"
+
+
+def chunk_list(lst: list, n: int) -> List[list]:
+    """Split list into chunks of size n."""
+    return [lst[i:i + n] for i in range(0, len(lst), n)]
+
+
+# ─── UPLOAD PANEL ─────────────────────────────────────────────────────────────
+
+with st.expander("➕ Add a Route", expanded=len(st.session_state.routes) == 0):
+    col_truck, col_route = st.columns(2)
+    with col_truck:
+        input_truck = st.text_input("Truck #", placeholder="e.g. 24DP-421", key="input_truck")
+    with col_route:
+        input_route = st.text_input("Route #", placeholder="e.g. M4", key="input_route")
+
     route_file = st.file_uploader(
-        "Upload route sheet photo or PDF",
+        "Upload DS-659 route sheet photo or PDF",
         type=["jpg", "jpeg", "png", "pdf"],
+        key="upload_route_file",
         help="Take a photo of the DS-659 or upload a PDF"
     )
 
-with col2:
-    st.header("Step 2 — Rastrac GPS CSV")
     gps_file = st.file_uploader(
-        "Upload Rastrac GPS export",
+        "Upload Rastrac GPS CSV",
         type=["csv"],
+        key="upload_gps_file",
         help="Export GPS History from Rastrac for this truck and date"
     )
 
-if 'claude_json' not in st.session_state:
-    st.session_state.claude_json = None
-if 'gps_streets' not in st.session_state:
-    st.session_state.gps_streets = None
+    add_btn = st.button("Add Route", type="primary", key="btn_add_route")
 
-# Process route sheet
-if route_file:
-    with st.spinner("Reading route sheet with Claude AI..."):
-        file_bytes = route_file.read()
-        ext = route_file.name.split('.')[-1].lower()
+    if add_btn:
+        errors = []
+        if not input_truck.strip():
+            errors.append("Truck # is required.")
+        if not input_route.strip():
+            errors.append("Route # is required.")
+        if not route_file:
+            errors.append("DS-659 route sheet file is required.")
+        if not gps_file:
+            errors.append("GPS CSV file is required.")
 
-        if ext == 'pdf':
-            result = process_pdf_with_claude(file_bytes)
+        if errors:
+            for e in errors:
+                st.error(e)
         else:
-            media_map = {'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png'}
-            media_type = media_map.get(ext, 'image/jpeg')
-            result = process_image_with_claude(file_bytes, media_type)
+            with st.spinner(f"Processing Truck {input_truck.strip()} / Route {input_route.strip()}..."):
+                # Parse route sheet
+                file_bytes = route_file.read()
+                ext = route_file.name.split('.')[-1].lower()
 
-        if result:
-            st.session_state.claude_json = result
-            n = len(result.get('itsas', []))
-            sec = result.get('section', '?')
-            route = result.get('route', '?')
-            conf = result.get('extraction_confidence', '?')
-            st.success(f"Route sheet read: Section {sec} | Route {route} | {n} ITSAs | Confidence: {conf}")
+                if ext == 'pdf':
+                    claude_json = process_pdf_with_claude(file_bytes)
+                else:
+                    media_map = {'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png'}
+                    media_type = media_map.get(ext, 'image/jpeg')
+                    claude_json = process_image_with_claude(file_bytes, media_type)
 
-            if debug_mode:
-                with st.expander("Parsed route data"):
-                    st.json(result)
+                # Parse GPS
+                gps_streets = set()
+                try:
+                    gps_df = pd.read_csv(gps_file)
+                    gps_streets = parse_rastrac_csv(gps_df)
+                except Exception as e:
+                    st.error(f"Failed to load GPS file: {e}")
+                    claude_json = None
 
-# Process GPS file
-if gps_file:
-    try:
-        gps_df = pd.read_csv(gps_file)
-        streets = parse_rastrac_csv(gps_df)
-        st.session_state.gps_streets = streets
-        st.success(f"GPS file loaded: {len(gps_df)} records | {len(streets)} unique streets")
-        if debug_mode:
-            with st.expander("Streets in GPS data"):
-                st.write(sorted(streets))
-    except Exception as e:
-        st.error(f"Failed to load GPS file: {e}")
+                if claude_json and gps_streets is not None:
+                    itsas = claude_json.get('itsas', [])
+                    if not itsas:
+                        st.error("No ITSAs found in route sheet. Cannot add route.")
+                    else:
+                        df = verify_itsas_against_gps(itsas, gps_streets)
+                        total = len(df)
+                        done = len(df[df['Status'].str.contains('DONE')])
+                        pct = round(done / total * 100, 1) if total > 0 else 0.0
 
-# Run verification
-st.divider()
+                        route_entry = {
+                            "truck": input_truck.strip(),
+                            "route": input_route.strip(),
+                            "claude_json": claude_json,
+                            "gps_streets": gps_streets,
+                            "df": df,
+                            "done": done,
+                            "total": total,
+                            "pct": pct,
+                        }
+                        st.session_state.routes.append(route_entry)
+                        st.toast(f"✅ Truck {input_truck.strip()} / Route {input_route.strip()} added")
+                        st.rerun()
+                elif not claude_json:
+                    st.error("Failed to parse route sheet. Please try again.")
 
-if st.session_state.claude_json and st.session_state.gps_streets:
-    if st.button("▶ Run Route Verification", type="primary"):
-        itsas = st.session_state.claude_json.get('itsas', [])
-        if not itsas:
-            st.error("No ITSAs found in route sheet.")
-        else:
-            df = verify_itsas_against_gps(itsas, st.session_state.gps_streets)
-            total = len(df)
-            done = len(df[df['Status'].str.contains('DONE')])
-            skipped = total - done
-            pct = round(done / total * 100, 1) if total > 0 else 0
 
-            st.header("Results")
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Total ITSAs", total)
-            c2.metric("Done", done)
-            c3.metric("Skipped", skipped)
-            c4.metric("Completion", f"{pct}%")
+# ─── DASHBOARD ────────────────────────────────────────────────────────────────
 
-            # Progress bar
-            st.progress(done / total if total > 0 else 0)
+routes = st.session_state.routes
+n_routes = len(routes)
 
-            st.subheader("ITSA Breakdown")
-            st.dataframe(
-                df[["ITSA #", "Street", "From", "To", "Side", "Status"]],
-                use_container_width=True,
-                height=min(700, 50 + 35 * total)
+st.header(f"📊 Route Dashboard — {n_routes} route{'s' if n_routes != 1 else ''}")
+
+if n_routes == 0:
+    st.info("No routes loaded yet. Use the **➕ Add a Route** panel above to get started.")
+else:
+    # 3-column card grid
+    COLS = 3
+    for row_start in range(0, n_routes, COLS):
+        card_cols = st.columns(COLS)
+        for col_idx in range(COLS):
+            route_idx = row_start + col_idx
+            if route_idx >= n_routes:
+                break
+
+            r = routes[route_idx]
+            truck = r["truck"]
+            route_label = r["route"]
+            cj = r["claude_json"]
+            done = r["done"]
+            total = r["total"]
+            pct = r["pct"]
+            section = cj.get("section", "?")
+            district = cj.get("district", "?")
+
+            # Status badge
+            if pct >= 100:
+                badge = "✅ Complete"
+            elif pct >= 80:
+                badge = "🟡 Partial"
+            else:
+                badge = "🔴 Needs Attention"
+
+            missed_count = total - done
+
+            with card_cols[col_idx]:
+                with st.container(border=True):
+                    st.markdown(f"### 🚛 {truck} · Route {route_label}")
+                    st.markdown(f"**Section:** {section} &nbsp;|&nbsp; **District:** {district}")
+                    st.markdown(f"**{badge}**")
+                    st.progress(pct / 100 if total > 0 else 0)
+                    st.markdown(f"**{pct}%** &nbsp;&nbsp; ✅ {done} done &nbsp; ❌ {missed_count} missed")
+
+                    btn_col1, btn_col2 = st.columns(2)
+
+                    with btn_col1:
+                        toggle_key = f"detail_open_{route_idx}"
+                        if toggle_key not in st.session_state.detail_open:
+                            st.session_state.detail_open[toggle_key] = False
+                        if st.button("Details ▼", key=f"btn_details_{route_idx}"):
+                            st.session_state.detail_open[toggle_key] = not st.session_state.detail_open[toggle_key]
+                            st.rerun()
+
+                    with btn_col2:
+                        missed_df = r["df"][r["df"]["Status"].str.contains("SKIPPED")]
+                        if not missed_df.empty and os.path.exists(TEMPLATE_PATH):
+                            try:
+                                wlo_bytes = generate_work_left_out(missed_df, cj)
+                                sec = cj.get('section', 'SEC')
+                                rte = cj.get('route', 'RTE')
+                                st.download_button(
+                                    "📋 Work Left Out",
+                                    data=wlo_bytes,
+                                    file_name=f"Work_Left_Out_{sec}_{rte}_{truck}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    key=f"dl_wlo_{route_idx}"
+                                )
+                            except Exception as e:
+                                st.warning(f"WLO error: {e}")
+                        else:
+                            st.button("📋 Work Left Out", disabled=True, key=f"dl_wlo_disabled_{route_idx}")
+
+        # Detail views for this row (rendered below the card row)
+        for col_idx in range(COLS):
+            route_idx = row_start + col_idx
+            if route_idx >= n_routes:
+                break
+
+            toggle_key = f"detail_open_{route_idx}"
+            if st.session_state.detail_open.get(toggle_key, False):
+                r = routes[route_idx]
+                truck = r["truck"]
+                route_label = r["route"]
+                cj = r["claude_json"]
+                df = r["df"]
+                done = r["done"]
+                total = r["total"]
+                pct = r["pct"]
+                borough = infer_borough(cj)
+
+                st.markdown(f"---\n#### 🚛 {truck} · Route {route_label} — Detail View")
+
+                tab1, tab2 = st.tabs(["📋 ITSA Breakdown", "🗺️ Navigation"])
+
+                with tab1:
+                    display_df = df[["ITSA #", "Street", "From", "To", "Side", "Status"]].copy()
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+                    st.markdown(f"**{done} of {total} ITSAs completed ({pct}%)**")
+
+                with tab2:
+                    all_streets = df["Street"].tolist()
+                    missed_rows = df[df["Status"].str.contains("SKIPPED")]
+                    missed_streets = missed_rows["Street"].tolist()
+
+                    # ── Full Route Navigation ──
+                    st.subheader("🗺️ Ride Full Route")
+                    chunks = chunk_list(all_streets, 6)
+                    for chunk_idx, chunk in enumerate(chunks):
+                        start_itsa = chunk_idx * 6 + 1
+                        end_itsa = start_itsa + len(chunk) - 1
+                        url = build_maps_url(chunk, borough)
+                        st.markdown(f"[Group {chunk_idx + 1} (ITSAs {start_itsa}–{end_itsa}) →]({url})")
+
+                    # ── Missed Streets Navigation ──
+                    st.subheader("🔴 Missed Streets Only")
+                    if missed_streets:
+                        missed_chunks = chunk_list(missed_streets, 6)
+                        if len(missed_streets) <= 6:
+                            url = build_maps_url(missed_streets, borough)
+                            st.markdown(f"[Navigate All Missed ({len(missed_streets)} streets) →]({url})")
+                        else:
+                            for chunk_idx, chunk in enumerate(missed_chunks):
+                                url = build_maps_url(chunk, borough)
+                                start_n = chunk_idx * 6 + 1
+                                end_n = start_n + len(chunk) - 1
+                                st.markdown(f"[Missed Group {chunk_idx + 1} (streets {start_n}–{end_n}) →]({url})")
+
+                        st.markdown("**Individual missed ITSAs:**")
+                        for _, row in missed_rows.iterrows():
+                            nav_url = (
+                                "https://www.google.com/maps/dir/My+Location/"
+                                + row["Street"].replace(" ", "+")
+                                + ",+" + borough.replace(" ", "+").replace(",", "")
+                            )
+                            st.markdown(
+                                f"ITSA {row['ITSA #']} — {row['Street']} "
+                                f"({row['From']} → {row['To']}) "
+                                f"[Navigate]({nav_url})"
+                            )
+                    else:
+                        st.success("No missed streets — all ITSAs completed! 🎉")
+
+                st.markdown("---")
+
+
+# ─── SUMMARY BAR ─────────────────────────────────────────────────────────────
+
+if n_routes > 0:
+    total_done = sum(r["done"] for r in routes)
+    total_all = sum(r["total"] for r in routes)
+    overall_pct = round(total_done / total_all * 100, 1) if total_all > 0 else 0.0
+
+    st.divider()
+    st.markdown(
+        f"**Overall: {total_done}/{total_all} ITSAs complete ({overall_pct}%) across {n_routes} route{'s' if n_routes != 1 else ''}**"
+    )
+
+    # Zip all Work Left Out excels
+    if os.path.exists(TEMPLATE_PATH):
+        try:
+            zip_buf = io.BytesIO()
+            with zipfile.ZipFile(zip_buf, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
+                for r in routes:
+                    missed_df = r["df"][r["df"]["Status"].str.contains("SKIPPED")]
+                    if not missed_df.empty:
+                        cj = r["claude_json"]
+                        wlo_bytes = generate_work_left_out(missed_df, cj)
+                        sec = cj.get("section", "SEC")
+                        rte = cj.get("route", "RTE")
+                        truck = r["truck"]
+                        fname = f"Work_Left_Out_{sec}_{rte}_{truck}.xlsx"
+                        zf.writestr(fname, wlo_bytes)
+            zip_buf.seek(0)
+            st.download_button(
+                "📥 Download All Work Left Out",
+                data=zip_buf.getvalue(),
+                file_name="All_Work_Left_Out.zip",
+                mime="application/zip",
+                key="dl_all_wlo_zip"
             )
-
-            # Missed streets
-            missed = df[df['Status'].str.contains('SKIPPED')]
-            if not missed.empty:
-                st.subheader(f"Missed Streets — {len(missed)} to service")
-
-                stops = "/".join(
-                    r['Street'].replace(' ', '+') + ",+Staten+Island,+NY+10312"
-                    for _, r in missed.iterrows()
-                )
-                multi = "https://www.google.com/maps/dir/My+Location/" + stops
-                st.markdown(f"**[Navigate All Missed Streets →]({multi})**")
-                st.divider()
-
-                for _, r in missed.iterrows():
-                    st.markdown(
-                        f"ITSA **{r['ITSA #']}** — {r['Street']} "
-                        f"({r['From']} → {r['To']}) "
-                        f"[Navigate]({r['_link']})"
-                    )
-
-            # Download
-            st.divider()
-            info = st.session_state.claude_json
-            lines = [
-                "ROUTE VERIFICATION REPORT — NYC DSNY",
-                f"Section: {info.get('section','?')} | Route: {info.get('route','?')} | District: {info.get('district','?')}",
-                f"Completion: {done}/{total} ITSAs ({pct}%)",
-                "", "─" * 50
-            ]
-            for _, r in df.iterrows():
-                lines.append(f"ITSA {r['ITSA #']} | {r['Street']} | {r['From']} → {r['To']} | {r['Status']}")
-            if not missed.empty:
-                lines += ["", "MISSED:"]
-                for _, r in missed.iterrows():
-                    lines.append(f"  ITSA {r['ITSA #']}: {r['Street']} ({r['From']} → {r['To']})")
-
-            dl_col1, dl_col2 = st.columns(2)
-            with dl_col1:
-                st.download_button(
-                    "📄 Download Report (TXT)",
-                    data="\n".join(lines),
-                    file_name="routeverify_report.txt",
-                    mime="text/plain"
-                )
-            with dl_col2:
-                if not missed.empty and os.path.exists(TEMPLATE_PATH):
-                    try:
-                        wlo_bytes = generate_work_left_out(missed, st.session_state.claude_json)
-                        sec = st.session_state.claude_json.get('section', 'SEC')
-                        route_label = st.session_state.claude_json.get('route', 'RTE')
-                        st.download_button(
-                            "📋 Work Left Out (Excel)",
-                            data=wlo_bytes,
-                            file_name=f"Work_Left_Out_{sec}_{route_label}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
-                    except Exception as e:
-                        st.warning(f"Could not generate Work Left Out: {e}")
-
-elif not st.session_state.claude_json:
-    st.info("Upload a DS-659 route sheet to begin.")
-elif not st.session_state.gps_streets:
-    st.info("Upload the Rastrac GPS CSV to complete verification.")
+        except Exception as e:
+            st.warning(f"Could not build zip: {e}")
