@@ -16,8 +16,18 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
+# Initialize client — use env var if set, otherwise prompt user in sidebar
+_api_key = os.getenv("CLAUDE_API_KEY", "")
+if not _api_key:
+    with st.sidebar:
+        st.warning("No API key in environment")
+        _api_key = st.text_input("Anthropic API Key", type="password", help="Paste your sk-ant-... key here")
+    if not _api_key:
+        st.info("Enter your Anthropic API key in the sidebar to continue.")
+        st.stop()
+
 try:
-    client = anthropic.Anthropic(api_key=os.getenv("CLAUDE_API_KEY"))
+    client = anthropic.Anthropic(api_key=_api_key)
 except Exception as e:
     st.error(f"Failed to initialize Claude API: {e}")
     st.stop()
