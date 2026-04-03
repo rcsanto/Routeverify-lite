@@ -88,7 +88,7 @@ def process_image_with_claude(image_bytes: bytes, media_type: str) -> Optional[D
         )
 
         msg = client.messages.create(
-            model="claude-opus-4-5",
+            model="claude-opus-4-5-20251101",
             max_tokens=4096,
             messages=[{
                 "role": "user",
@@ -159,7 +159,7 @@ def process_pdf_with_claude(file_bytes: bytes) -> Optional[Dict]:
         )
 
         msg = client.messages.create(
-            model="claude-opus-4-5",
+            model="claude-opus-4-5-20251101",
             max_tokens=4096,
             messages=[{"role": "user", "content": prompt}]
         )
