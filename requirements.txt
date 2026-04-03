@@ -1,9 +1,8 @@
 streamlit
 pandas
-openai
-pytesseract
-Pillow
-pdf2image
-python-dotenv
 anthropic
 pypdf
+pdf2image
+pytesseract
+Pillow
+python-dotenv
