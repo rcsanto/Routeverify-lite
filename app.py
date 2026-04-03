@@ -2,46 +2,33 @@ import streamlit as st
 import pandas as pd
 import os
 import tempfile
+import base64
 from dotenv import load_dotenv
 import anthropic
 from pypdf import PdfReader
-from pdf2image import convert_from_path
-import pytesseract
 import json
 import logging
 from typing import Dict, List, Optional
 import re
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Load environment variables
 load_dotenv()
 
-# Initialize Anthropic client
 try:
     client = anthropic.Anthropic(api_key=os.getenv("CLAUDE_API_KEY"))
 except Exception as e:
     st.error(f"Failed to initialize Claude API: {e}")
     st.stop()
 
-# Page configuration
-st.set_page_config(
-    page_title="RouteVerify Lite - DSNY",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="RouteVerify - DSNY", layout="wide")
+st.title("RouteVerify Lite — DSNY SI03")
 
-st.title("RouteVerify Lite - DSNY SI03")
-
-# Sidebar
 with st.sidebar:
     st.header("Configuration")
-    debug_mode = st.checkbox("Debug Mode", help="Show additional processing details")
-    ocr_confidence = st.slider("OCR Confidence Threshold", 0, 100, 60)
+    debug_mode = st.checkbox("Debug Mode")
 
-# PIN authentication
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 
@@ -52,87 +39,74 @@ if not st.session_state.authenticated:
             st.session_state.authenticated = True
             st.rerun()
         else:
-            st.error("Invalid PIN. Access denied.")
+            st.error("Invalid PIN.")
     st.stop()
 
 st.success("Authenticated")
 
 
-# ─── TEXT EXTRACTION ────────────────────────────────────────────────────────
+# ─── ROUTE SHEET PARSING (Claude Vision) ────────────────────────────────────
 
-def extract_text_from_pdf(file_path: str) -> str:
+def process_image_with_claude(image_bytes: bytes, media_type: str) -> Optional[Dict]:
+    """Send image directly to Claude vision — handles DS659 photos accurately."""
     try:
-        reader = PdfReader(file_path)
-        all_text = ""
-        for page_num, page in enumerate(reader.pages):
-            text = page.extract_text()
-            if text:
-                all_text += f"\n--- Page {page_num + 1} ---\n{text}"
-        return all_text.strip()
-    except Exception as e:
-        logger.error(f"PDF extraction failed: {e}")
-        return ""
+        b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
 
-
-def extract_text_with_ocr(file_path: str, confidence_threshold: int = 60) -> str:
-    try:
-        images = convert_from_path(file_path, dpi=300)
-        text = ""
-        for i, image in enumerate(images):
-            ocr_data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
-            filtered_text = []
-            for j, conf in enumerate(ocr_data['conf']):
-                if int(conf) > confidence_threshold:
-                    word = ocr_data['text'][j].strip()
-                    if word:
-                        filtered_text.append(word)
-            page_text = ' '.join(filtered_text)
-            if page_text:
-                text += f"\n--- OCR Page {i + 1} ---\n{page_text}"
-        return text.strip()
-    except Exception as e:
-        logger.error(f"OCR extraction failed: {e}")
-        return ""
-
-
-# ─── CLAUDE: ROUTE SHEET PARSING ────────────────────────────────────────────
-
-def process_route_sheet_with_claude(text: str) -> Optional[Dict]:
-    try:
         prompt = (
-            "Analyze this DS-659 DSNY route sheet and extract structured data.\n\n"
-            "Return ONLY a valid JSON object with this exact structure:\n"
+            "This is a DSNY DS-659 Route Narrative form. "
+            "Extract ALL route information and return ONLY valid JSON.\n\n"
+            "JSON structure:\n"
             "{\n"
-            '  "section": "section_number",\n'
-            '  "route": "route_number",\n'
-            '  "district": "district_code",\n'
-            '  "material": "material_description",\n'
+            '  "section": "section code",\n'
+            '  "route": "route number",\n'
+            '  "district": "district code",\n'
+            '  "material": "material description",\n'
+            '  "vehicle_type": "vehicle type",\n'
             '  "itsas": [\n'
-            '    {"number": 1, "street": "STREET NAME", "from_cross": "FROM STREET", "to_cross": "TO STREET", "side": "B"}\n'
+            '    {"number": 1, "street": "STREET NAME", "from_cross": "FROM", "to_cross": "TO", "side": "B"}\n'
             "  ],\n"
             '  "extraction_confidence": "high|medium|low"\n'
             "}\n\n"
-            "IMPORTANT: Extract every ITSA entry with its street name and cross streets.\n"
-            "Use uppercase for street names. Side values: B=Both, R=Right, L=Left.\n\n"
-            "Document text:\n" + text
+            "Rules:\n"
+            "- Extract EVERY ITSA row from the table\n"
+            "- Use UPPERCASE for street names\n"
+            "- Side: B=Both sides, R=Right, L=Left\n"
+            "- If a field is unclear, use your best reading\n"
+            "- Return ONLY the JSON, no other text"
         )
 
         msg = client.messages.create(
             model="claude-opus-4-5",
             max_tokens=4096,
-            temperature=0,
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": b64
+                        }
+                    },
+                    {"type": "text", "text": prompt}
+                ]
+            }]
         )
 
-        raw_response = ""
+        raw = ""
         for block in msg.content:
             if block.type == "text":
-                raw_response = block.text.strip()
+                raw = block.text.strip()
 
-        json_match = re.search(r'\{.*\}', raw_response, re.DOTALL)
+        if debug_mode:
+            with st.expander("Claude raw response (Debug)"):
+                st.text(raw)
+
+        json_match = re.search(r'\{.*\}', raw, re.DOTALL)
         if json_match:
             return json.loads(json_match.group())
-        return json.loads(raw_response)
+        return json.loads(raw)
 
     except json.JSONDecodeError as e:
         st.error(f"Claude returned invalid JSON: {e}")
@@ -142,105 +116,117 @@ def process_route_sheet_with_claude(text: str) -> Optional[Dict]:
         return None
 
 
+def process_pdf_with_claude(file_bytes: bytes) -> Optional[Dict]:
+    """Extract text from PDF then send to Claude."""
+    try:
+        import io
+        reader = PdfReader(io.BytesIO(file_bytes))
+        text = ""
+        for page in reader.pages:
+            t = page.extract_text()
+            if t:
+                text += t + "\n"
+
+        if not text.strip():
+            st.warning("PDF has no extractable text — try uploading a photo instead.")
+            return None
+
+        prompt = (
+            "This is DSNY DS-659 route sheet text. "
+            "Extract all data and return ONLY valid JSON:\n"
+            "{\n"
+            '  "section": "section code",\n'
+            '  "route": "route number",\n'
+            '  "district": "district code",\n'
+            '  "material": "material description",\n'
+            '  "itsas": [\n'
+            '    {"number": 1, "street": "STREET NAME", "from_cross": "FROM", "to_cross": "TO", "side": "B"}\n'
+            "  ],\n"
+            '  "extraction_confidence": "high|medium|low"\n'
+            "}\n\nText:\n" + text
+        )
+
+        msg = client.messages.create(
+            model="claude-opus-4-5",
+            max_tokens=4096,
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        raw = "".join(b.text for b in msg.content if b.type == "text").strip()
+        json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
+        return json.loads(raw)
+
+    except Exception as e:
+        st.error(f"PDF processing error: {e}")
+        return None
+
+
 # ─── GPS CSV PARSING ─────────────────────────────────────────────────────────
 
 def parse_rastrac_csv(gps_df: pd.DataFrame) -> set:
-    """
-    Extract unique street names from Rastrac CSV 'Address' column.
-    Address format: "123 Street Name, Staten Island, NY, 10312"
-    Returns a set of normalized street name strings.
-    """
     streets_visited = set()
-
-    if 'Address' not in gps_df.columns:
-        # Try alternate column names
-        addr_col = None
-        for col in gps_df.columns:
-            if 'addr' in col.lower() or 'street' in col.lower() or 'location' in col.lower():
-                addr_col = col
-                break
-        if not addr_col:
-            return streets_visited
-    else:
-        addr_col = 'Address'
+    addr_col = None
+    for col in gps_df.columns:
+        if 'addr' in col.lower() or col.lower() == 'address':
+            addr_col = col
+            break
+    if not addr_col:
+        return streets_visited
 
     for addr in gps_df[addr_col].dropna():
         addr_str = str(addr).strip()
-        # Remove house number (leading digits and spaces)
-        # "123 Philip Ave, Staten Island, NY, 10312" -> "Philip Ave"
         parts = addr_str.split(',')
         if parts:
             street_part = parts[0].strip()
-            # Remove leading house number
             street_only = re.sub(r'^\d+\s+', '', street_part).strip().upper()
             if street_only:
                 streets_visited.add(street_only)
-
     return streets_visited
 
 
 def normalize_street(name: str) -> str:
-    """Normalize street name for comparison."""
     name = name.upper().strip()
-    # Common abbreviation expansions
-    replacements = {
-        ' AVE': ' AVE', ' AVENUE': ' AVE',
-        ' ST': ' ST', ' STREET': ' ST',
-        ' BLVD': ' BLVD', ' BOULEVARD': ' BLVD',
-        ' DR': ' DR', ' DRIVE': ' DR',
-        ' CT': ' CT', ' COURT': ' CT',
-        ' PL': ' PL', ' PLACE': ' PL',
-        ' RD': ' RD', ' ROAD': ' RD',
-        ' LN': ' LN', ' LANE': ' LN',
-        ' TER': ' TER', ' TERRACE': ' TER',
-        ' HWY': ' HWY', ' HIGHWAY': ' HWY',
+    expansions = {
+        'AVENUE': 'AVE', 'STREET': 'ST', 'BOULEVARD': 'BLVD',
+        'DRIVE': 'DR', 'COURT': 'CT', 'PLACE': 'PL',
+        'ROAD': 'RD', 'LANE': 'LN', 'TERRACE': 'TER',
+        'HIGHWAY': 'HWY', 'PARKWAY': 'PKWY'
     }
-    for full, abbr in replacements.items():
-        name = name.replace(full.strip(), abbr.strip())
-    return name
+    for full, abbr in expansions.items():
+        name = re.sub(r'\b' + full + r'\b', abbr, name)
+    return name.strip()
 
 
 def verify_itsas_against_gps(itsas: List[Dict], streets_visited: set) -> pd.DataFrame:
-    """
-    Match each ITSA street against the GPS-visited streets.
-    Returns a DataFrame with verification results.
-    """
     rows = []
     norm_visited = {normalize_street(s) for s in streets_visited}
 
     for itsa in itsas:
         num = itsa.get('number', '?')
-        street = itsa.get('street', '').strip()
+        street = str(itsa.get('street', '')).strip()
         from_cross = itsa.get('from_cross', '')
         to_cross = itsa.get('to_cross', '')
         side = itsa.get('side', 'B')
 
         norm_street = normalize_street(street)
-
-        # Check exact match first
         matched = norm_street in norm_visited
 
-        # Fuzzy: check if any visited street contains the key word(s)
         if not matched:
             street_words = set(norm_street.split())
             for visited in norm_visited:
                 visited_words = set(visited.split())
-                # At least 2 words match (handles "PHILIP AVE" vs "PHILIP AVENUE")
-                if len(street_words & visited_words) >= min(2, len(street_words)):
+                overlap = street_words & visited_words
+                if len(overlap) >= min(2, len(street_words)):
                     matched = True
                     break
 
-        if matched:
-            status = "DONE"
-            status_icon = "✅"
-        else:
-            status = "SKIPPED"
-            status_icon = "❌"
-
+        status = "✅ DONE" if matched else "❌ SKIPPED"
         maps_link = (
             "https://www.google.com/maps/dir/My+Location/"
             + street.replace(' ', '+') + ",+Staten+Island,+NY+10312"
-        )
+        ) if not matched else ""
 
         rows.append({
             "ITSA #": num,
@@ -248,8 +234,8 @@ def verify_itsas_against_gps(itsas: List[Dict], streets_visited: set) -> pd.Data
             "From": from_cross,
             "To": to_cross,
             "Side": side,
-            "Status": status_icon + " " + status,
-            "Navigate": maps_link if status == "SKIPPED" else ""
+            "Status": status,
+            "_link": maps_link
         })
 
     return pd.DataFrame(rows)
@@ -260,163 +246,135 @@ def verify_itsas_against_gps(itsas: List[Dict], streets_visited: set) -> pd.Data
 col1, col2 = st.columns(2)
 
 with col1:
-    st.header("Step 1: Upload DS-659 Route Sheet")
+    st.header("Step 1 — DS-659 Route Sheet")
     route_file = st.file_uploader(
-        "Route Sheet (PDF or photo)",
-        type=["pdf", "jpg", "jpeg", "png"],
-        help="Upload the DS-659 route narrative"
+        "Upload route sheet photo or PDF",
+        type=["jpg", "jpeg", "png", "pdf"],
+        help="Take a photo of the DS-659 or upload a PDF"
     )
 
 with col2:
-    st.header("Step 2: Upload Rastrac GPS CSV")
+    st.header("Step 2 — Rastrac GPS CSV")
     gps_file = st.file_uploader(
-        "Rastrac GPS Export (CSV)",
+        "Upload Rastrac GPS export",
         type=["csv"],
-        help="Export GPS History from Rastrac for this truck/date"
+        help="Export GPS History from Rastrac for this truck and date"
     )
 
-# Store results in session state
 if 'claude_json' not in st.session_state:
     st.session_state.claude_json = None
 if 'gps_streets' not in st.session_state:
     st.session_state.gps_streets = None
-if 'gps_df' not in st.session_state:
-    st.session_state.gps_df = None
 
-# ── Process Route Sheet ──
+# Process route sheet
 if route_file:
-    with st.spinner("Processing route sheet with AI..."):
-        with tempfile.NamedTemporaryFile(delete=False, suffix="." + route_file.name.split('.')[-1]) as tmp:
-            tmp.write(route_file.getvalue())
-            tmp_path = tmp.name
+    with st.spinner("Reading route sheet with Claude AI..."):
+        file_bytes = route_file.read()
+        ext = route_file.name.split('.')[-1].lower()
 
-        try:
-            route_text = extract_text_from_pdf(tmp_path) if route_file.type == "application/pdf" else ""
-            if not route_text.strip():
-                route_text = extract_text_with_ocr(tmp_path, ocr_confidence)
+        if ext == 'pdf':
+            result = process_pdf_with_claude(file_bytes)
+        else:
+            media_map = {'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png'}
+            media_type = media_map.get(ext, 'image/jpeg')
+            result = process_image_with_claude(file_bytes, media_type)
 
-            if not route_text.strip():
-                st.error("No readable text found in document.")
-            else:
-                if debug_mode:
-                    with st.expander("Extracted Text (Debug)"):
-                        st.text_area("Raw text:", route_text, height=200)
+        if result:
+            st.session_state.claude_json = result
+            n = len(result.get('itsas', []))
+            sec = result.get('section', '?')
+            route = result.get('route', '?')
+            conf = result.get('extraction_confidence', '?')
+            st.success(f"Route sheet read: Section {sec} | Route {route} | {n} ITSAs | Confidence: {conf}")
 
-                result = process_route_sheet_with_claude(route_text)
-                if result:
-                    st.session_state.claude_json = result
-                    st.success(
-                        f"Route sheet processed: "
-                        f"Section {result.get('section','?')} | "
-                        f"Route {result.get('route','?')} | "
-                        f"{len(result.get('itsas',[]))} ITSAs found"
-                    )
-                    if debug_mode:
-                        with st.expander("Parsed Route Data (Debug)"):
-                            st.json(result)
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except:
-                pass
+            if debug_mode:
+                with st.expander("Parsed route data"):
+                    st.json(result)
 
-# ── Process GPS File ──
+# Process GPS file
 if gps_file:
     try:
         gps_df = pd.read_csv(gps_file)
-        st.session_state.gps_df = gps_df
         streets = parse_rastrac_csv(gps_df)
         st.session_state.gps_streets = streets
-        st.success(f"GPS file loaded: {len(gps_df)} records | {len(streets)} unique streets detected")
-
+        st.success(f"GPS file loaded: {len(gps_df)} records | {len(streets)} unique streets")
         if debug_mode:
-            with st.expander("Streets detected in GPS data (Debug)"):
+            with st.expander("Streets in GPS data"):
                 st.write(sorted(streets))
     except Exception as e:
         st.error(f"Failed to load GPS file: {e}")
 
-# ── Run Verification ──
+# Run verification
 st.divider()
 
 if st.session_state.claude_json and st.session_state.gps_streets:
-    if st.button("Run Route Verification", type="primary"):
+    if st.button("▶ Run Route Verification", type="primary"):
         itsas = st.session_state.claude_json.get('itsas', [])
-        streets_visited = st.session_state.gps_streets
-
         if not itsas:
-            st.error("No ITSAs found in route sheet. Check the uploaded file.")
+            st.error("No ITSAs found in route sheet.")
         else:
-            results_df = verify_itsas_against_gps(itsas, streets_visited)
-
-            total = len(results_df)
-            done = len(results_df[results_df['Status'].str.contains('DONE')])
+            df = verify_itsas_against_gps(itsas, st.session_state.gps_streets)
+            total = len(df)
+            done = len(df[df['Status'].str.contains('DONE')])
             skipped = total - done
-            pct = round((done / total) * 100, 1) if total > 0 else 0
+            pct = round(done / total * 100, 1) if total > 0 else 0
 
-            # Summary metrics
-            st.header("Verification Results")
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Total ITSAs", total)
-            m2.metric("Confirmed Done", done)
-            m3.metric("Skipped / Missed", skipped)
-            m4.metric("Completion", f"{pct}%")
+            st.header("Results")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total ITSAs", total)
+            c2.metric("Done", done)
+            c3.metric("Skipped", skipped)
+            c4.metric("Completion", f"{pct}%")
 
-            # Color-coded table
+            # Progress bar
+            st.progress(done / total if total > 0 else 0)
+
             st.subheader("ITSA Breakdown")
             st.dataframe(
-                results_df[["ITSA #", "Street", "From", "To", "Side", "Status"]],
+                df[["ITSA #", "Street", "From", "To", "Side", "Status"]],
                 use_container_width=True,
-                height=min(600, 50 + 35 * total)
+                height=min(700, 50 + 35 * total)
             )
 
-            # Missed streets with nav links
-            missed = results_df[results_df['Status'].str.contains('SKIPPED')]
+            # Missed streets
+            missed = df[df['Status'].str.contains('SKIPPED')]
             if not missed.empty:
-                st.subheader(f"Missed Streets — Navigation Links ({len(missed)} streets)")
-                st.caption("Tap any link to navigate directly (opens Google Maps)")
+                st.subheader(f"Missed Streets — {len(missed)} to service")
 
-                # Single multi-stop link for all missed streets
                 stops = "/".join(
-                    row['Street'].replace(' ', '+') + ",+Staten+Island,+NY+10312"
-                    for _, row in missed.iterrows()
+                    r['Street'].replace(' ', '+') + ",+Staten+Island,+NY+10312"
+                    for _, r in missed.iterrows()
                 )
-                multi_link = "https://www.google.com/maps/dir/My+Location/" + stops
-                st.markdown(f"**[Navigate All Missed Streets (single route)]({multi_link})**")
-
+                multi = "https://www.google.com/maps/dir/My+Location/" + stops
+                st.markdown(f"**[Navigate All Missed Streets →]({multi})**")
                 st.divider()
-                for _, row in missed.iterrows():
+
+                for _, r in missed.iterrows():
                     st.markdown(
-                        f"ITSA {row['ITSA #']} — **{row['Street']}** "
-                        f"({row['From']} → {row['To']}) "
-                        f"[Navigate]({row['Navigate']})"
+                        f"ITSA **{r['ITSA #']}** — {r['Street']} "
+                        f"({r['From']} → {r['To']}) "
+                        f"[Navigate]({r['_link']})"
                     )
 
-            # Download report
+            # Download
             st.divider()
-            report_lines = [
+            info = st.session_state.claude_json
+            lines = [
                 "ROUTE VERIFICATION REPORT — NYC DSNY",
-                f"Section: {st.session_state.claude_json.get('section','?')} | "
-                f"Route: {st.session_state.claude_json.get('route','?')} | "
-                f"District: {st.session_state.claude_json.get('district','?')}",
+                f"Section: {info.get('section','?')} | Route: {info.get('route','?')} | District: {info.get('district','?')}",
                 f"Completion: {done}/{total} ITSAs ({pct}%)",
-                "",
-                "ITSA | STREET | FROM | TO | STATUS",
-                "-" * 60
+                "", "─" * 50
             ]
-            for _, row in results_df.iterrows():
-                report_lines.append(
-                    f"{row['ITSA #']} | {row['Street']} | {row['From']} | {row['To']} | {row['Status']}"
-                )
+            for _, r in df.iterrows():
+                lines.append(f"ITSA {r['ITSA #']} | {r['Street']} | {r['From']} → {r['To']} | {r['Status']}")
             if not missed.empty:
-                report_lines.append("")
-                report_lines.append("MISSED STREETS:")
-                for _, row in missed.iterrows():
-                    report_lines.append(f"  ITSA {row['ITSA #']}: {row['Street']} ({row['From']} to {row['To']})")
+                lines += ["", "MISSED:"]
+                for _, r in missed.iterrows():
+                    lines.append(f"  ITSA {r['ITSA #']}: {r['Street']} ({r['From']} → {r['To']})")
 
-            report_text = "\n".join(report_lines)
             st.download_button(
-                label="Download Report (.txt)",
-                data=report_text,
+                "Download Report",
+                data="\n".join(lines),
                 file_name="routeverify_report.txt",
                 mime="text/plain"
             )
