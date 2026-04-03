@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
+st.set_page_config(page_title="RouteVerify - DSNY", layout="wide")
+st.title("RouteVerify Lite — DSNY SI03")
+
 # Always show API key input in sidebar — env var used as default if available
 _env_key = os.getenv("CLAUDE_API_KEY", "")
 with st.sidebar:
@@ -37,13 +40,6 @@ try:
 except Exception as e:
     st.error(f"Failed to initialize Claude API: {e}")
     st.stop()
-
-st.set_page_config(page_title="RouteVerify - DSNY", layout="wide")
-st.title("RouteVerify Lite — DSNY SI03")
-
-with st.sidebar:
-    st.header("Configuration")
-    debug_mode = st.checkbox("Debug Mode")
 
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
