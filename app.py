@@ -473,7 +473,7 @@ else:
                     if workers_val != st.session_state.routes[route_idx].get('workers', ''):
                         st.session_state.routes[route_idx]['workers'] = workers_val
 
-                    btn_col1, btn_col2, btn_col3 = st.columns(3)
+                    btn_col1, btn_col2 = st.columns(2)
 
                     with btn_col1:
                         toggle_key = f"detail_open_{route_idx}"
@@ -501,22 +501,6 @@ else:
                                 st.warning(f"WLO error: {e}")
                         else:
                             st.button("📋 Work Left Out", disabled=True, key=f"dl_wlo_disabled_{route_idx}")
-
-                    with btn_col3:
-                        try:
-                            ds332_bytes = generate_ds332_pdf([routes[route_idx]])
-                            sec = cj.get('section', 'SEC')
-                            rte = cj.get('route', 'RTE')
-                            today_str = datetime.now().strftime("%Y%m%d")
-                            st.download_button(
-                                "📄 DS-332",
-                                data=ds332_bytes,
-                                file_name=f"DS332_{sec}_{rte}_{truck}_{today_str}.pdf",
-                                mime="application/pdf",
-                                key=f"dl_ds332_{route_idx}"
-                            )
-                        except Exception as e:
-                            st.button("📄 DS-332", disabled=True, key=f"dl_ds332_disabled_{route_idx}")
 
         # Detail views
         for col_idx in range(COLS):
@@ -612,7 +596,7 @@ if n_routes > 0:
         try:
             today_str = datetime.now().strftime("%Y%m%d")
             ds332_all_bytes = generate_ds332_pdf(routes)
-            st.download_button("📄 DS-332 (All Trucks)", data=ds332_all_bytes,
+            st.download_button("📄 DS-332", data=ds332_all_bytes,
                                file_name=f"DS332_All_{today_str}.pdf", mime="application/pdf", key="dl_ds332_all")
         except Exception as e:
             st.warning(f"DS-332 error: {e}")
