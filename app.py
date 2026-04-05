@@ -16,11 +16,12 @@ import re
 import openpyxl
 from openpyxl import load_workbook
 from copy import copy
-from reportlab.lib.pagesizes import letter
+from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -193,85 +194,161 @@ def generate_work_left_out(missed_df: pd.DataFrame, route_info: dict) -> bytes:
 # ─── DS-332 DAILY ROUTE ASSIGNMENT PDF ────────────────────────────────────────
 
 def generate_ds332_pdf(route_entries: list, date_str: str = None) -> bytes:
-    """Generate DS-332 Daily Route Assignment PDF matching DSNY form layout."""
+    """Generate DS-332 Daily Route Assignment PDF — landscape, matching actual DSNY form."""
     if not date_str:
         date_str = datetime.now().strftime("%m/%d/%Y")
 
+    page = landscape(letter)  # 11 x 8.5 inches
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
-        buf, pagesize=letter,
-        leftMargin=0.5*inch, rightMargin=0.5*inch,
-        topMargin=0.5*inch, bottomMargin=0.5*inch
+        buf, pagesize=page,
+        leftMargin=0.4*inch, rightMargin=0.4*inch,
+        topMargin=0.35*inch, bottomMargin=0.35*inch
     )
+
     styles = getSampleStyleSheet()
+    center_bold = ParagraphStyle('CenterBold', fontName='Helvetica-Bold', fontSize=11, alignment=TA_CENTER)
+    center_sm = ParagraphStyle('CenterSm', fontName='Helvetica', fontSize=8, alignment=TA_CENTER)
+    left_sm = ParagraphStyle('LeftSm', fontName='Helvetica', fontSize=8, alignment=TA_LEFT)
+
     elements = []
+    W = page[0] - 0.8*inch  # usable width
 
-    elements.append(Paragraph("NYC DEPARTMENT OF SANITATION", styles['Heading1']))
-    elements.append(Paragraph("DAILY ROUTE ASSIGNMENT — DS-332", styles['Heading2']))
-    elements.append(Spacer(1, 0.1 * inch))
-
+    # ── Header block ──────────────────────────────────────────────────────────
     first_cj = route_entries[0].get('claude_json', {}) if route_entries else {}
-    district = first_cj.get('district', '')
-    section_hdr = first_cj.get('section', '')
+    district  = first_cj.get('district', '')
+    section_h = first_cj.get('section', '')
 
-    info_data = [[f"Date: {date_str}", f"District: {district}", f"Section: {section_hdr}", "Supervisor: R. SANTOS"]]
-    info_table = Table(info_data, colWidths=[2*inch, 2*inch, 2*inch, 2*inch])
-    info_table.setStyle(TableStyle([
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+    hdr_data = [
+        [
+            Paragraph("NEW YORK CITY\nDEPARTMENT OF SANITATION", center_bold),
+            Paragraph("DAILY ROUTE ASSIGNMENT\nDS-332", center_bold),
+            Paragraph(
+                f"<b>DATE:</b> {date_str}          "
+                f"<b>DISTRICT:</b> {district}          "
+                f"<b>SECTION:</b> {section_h}",
+                left_sm
+            ),
+        ]
+    ]
+    hdr_table = Table(hdr_data, colWidths=[2.6*inch, 3.0*inch, W - 5.6*inch])
+    hdr_table.setStyle(TableStyle([
+        ('VALIGN',      (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING',  (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING',(0,0), (-1, -1), 4),
+        ('BOX',         (0, 0), (-1, -1), 1, colors.black),
+        ('LINEBEFORE',  (1, 0), (1, -1), 1, colors.black),
+        ('LINEBEFORE',  (2, 0), (2, -1), 1, colors.black),
     ]))
-    elements.append(info_table)
-    elements.append(Spacer(1, 0.15 * inch))
+    elements.append(hdr_table)
+    elements.append(Spacer(1, 0.08*inch))
 
-    headers = ['#', 'Vehicle #', 'Route', 'Section', 'Material', 'Sanitation Workers', 'Cleaned', 'Left Out']
-    col_widths = [0.3*inch, 0.9*inch, 0.6*inch, 0.65*inch, 1.0*inch, 2.1*inch, 0.65*inch, 0.7*inch]
+    # ── Main data table ────────────────────────────────────────────────────────
+    # Columns: # | Truck # | Route | Section | District | Material | Sanitation Workers | % Done | ITSAs Done | ITSAs Missed | Remarks
+    col_labels = ['#', 'Truck #', 'Route', 'Section', 'District', 'Material',
+                  'Sanitation Workers', '% Done', 'Done', 'Missed', 'Remarks']
+    col_w = [0.25*inch, 0.75*inch, 0.55*inch, 0.65*inch, 0.65*inch, 0.85*inch,
+             2.4*inch, 0.5*inch, 0.45*inch, 0.5*inch, 1.55*inch]
 
-    table_data = [headers]
+    cell_style = ParagraphStyle('Cell', fontName='Helvetica', fontSize=7.5, alignment=TA_CENTER, leading=9)
+    cell_left  = ParagraphStyle('CellL', fontName='Helvetica', fontSize=7.5, alignment=TA_LEFT, leading=9)
+
+    table_data = [col_labels]
     for i, r in enumerate(route_entries):
-        cj = r.get('claude_json', {})
-        pct = r.get('pct', 0)
-        done = r.get('done', 0)
-        total = r.get('total', 0)
-        cleaned = "YES" if pct >= 100 else "NO"
-        left_out = str(total - done) if total > 0 else "0"
-        workers = r.get('workers', '').strip() or '—'
+        cj      = r.get('claude_json', {})
+        pct     = r.get('pct', 0)
+        done    = r.get('done', 0)
+        total   = r.get('total', 0)
+        missed  = total - done
+        workers = r.get('workers', '').strip() or ''
         table_data.append([
             str(i + 1),
             r.get('truck', ''),
             r.get('route', ''),
             cj.get('section', ''),
+            cj.get('district', ''),
             cj.get('material', ''),
             workers,
-            cleaned,
-            left_out
+            f"{pct}%",
+            str(done),
+            str(missed),
+            '',   # Remarks — blank for supervisor to fill
         ])
 
-    main_table = Table(table_data, colWidths=col_widths)
+    # Pad to at least 20 rows so form looks complete
+    while len(table_data) < 21:
+        table_data.append(['', '', '', '', '', '', '', '', '', '', ''])
+
+    main_table = Table(table_data, colWidths=col_w, repeatRows=1)
     main_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#333333')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 8),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('ALIGN', (5, 1), (5, -1), 'LEFT'),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f2f2f2')]),
-        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-        ('ROWHEIGHT', (0, 0), (-1, -1), 18),
-        ('TOPPADDING', (0, 0), (-1, -1), 4),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        # Header row
+        ('BACKGROUND',    (0, 0), (-1, 0), colors.HexColor('#1a1a1a')),
+        ('TEXTCOLOR',     (0, 0), (-1, 0), colors.white),
+        ('FONTNAME',      (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE',      (0, 0), (-1, 0), 7.5),
+        ('ALIGN',         (0, 0), (-1, 0), 'CENTER'),
+        ('VALIGN',        (0, 0), (-1, 0), 'MIDDLE'),
+        # Data rows
+        ('FONTNAME',      (0, 1), (-1, -1), 'Helvetica'),
+        ('FONTSIZE',      (0, 1), (-1, -1), 7.5),
+        ('ALIGN',         (0, 1), (-1, -1), 'CENTER'),
+        ('ALIGN',         (6, 1), (6, -1), 'LEFT'),   # workers left-aligned
+        ('ALIGN',         (10, 1),(10, -1),'LEFT'),   # remarks left-aligned
+        ('VALIGN',        (0, 1), (-1, -1), 'MIDDLE'),
+        # Alternating rows
+        ('ROWBACKGROUNDS',(0, 1), (-1, -1), [colors.white, colors.HexColor('#f5f5f5')]),
+        # Grid
+        ('GRID',          (0, 0), (-1, -1), 0.4, colors.black),
+        # Row heights
+        ('ROWHEIGHT',     (0, 0), (0, 0), 16),
+        ('ROWHEIGHT',     (0, 1), (-1, -1), 14),
+        ('TOPPADDING',    (0, 0), (-1, -1), 2),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
     ]))
     elements.append(main_table)
-    elements.append(Spacer(1, 0.3 * inch))
+    elements.append(Spacer(1, 0.12*inch))
 
-    sig_data = [['Supervisor Signature: ___________________________', f'Date: {date_str}', 'Title: Supervisor MTS']]
-    sig_table = Table(sig_data, colWidths=[3*inch, 2*inch, 3*inch])
+    # ── Summary row ────────────────────────────────────────────────────────────
+    total_done_all = sum(r.get('done', 0) for r in route_entries)
+    total_itsas    = sum(r.get('total', 0) for r in route_entries)
+    total_missed   = total_itsas - total_done_all
+    overall_pct    = round(total_done_all / total_itsas * 100, 1) if total_itsas else 0.0
+
+    summary_data = [[
+        Paragraph(f"<b>TOTAL ROUTES:</b> {len(route_entries)}", left_sm),
+        Paragraph(f"<b>TOTAL ITSAs:</b> {total_itsas}", left_sm),
+        Paragraph(f"<b>COMPLETED:</b> {total_done_all}", left_sm),
+        Paragraph(f"<b>MISSED:</b> {total_missed}", left_sm),
+        Paragraph(f"<b>OVERALL:</b> {overall_pct}%", left_sm),
+    ]]
+    summary_table = Table(summary_data, colWidths=[W/5]*5)
+    summary_table.setStyle(TableStyle([
+        ('BOX',          (0, 0), (-1, -1), 0.5, colors.black),
+        ('INNERGRID',    (0, 0), (-1, -1), 0.3, colors.grey),
+        ('BACKGROUND',   (0, 0), (-1, -1), colors.HexColor('#e8e8e8')),
+        ('TOPPADDING',   (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING',(0, 0), (-1, -1), 4),
+        ('LEFTPADDING',  (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(summary_table)
+    elements.append(Spacer(1, 0.15*inch))
+
+    # ── Signature block ────────────────────────────────────────────────────────
+    sig_data = [[
+        Paragraph("Supervisor Signature: _______________________________", left_sm),
+        Paragraph(f"Date: {date_str}", left_sm),
+        Paragraph("Title: Supervisor MTS", left_sm),
+        Paragraph("Badge #: 5104", left_sm),
+        Paragraph("Time: ____________", left_sm),
+    ]]
+    sig_table = Table(sig_data, colWidths=[W*0.35, W*0.15, W*0.2, W*0.15, W*0.15])
     sig_table.setStyle(TableStyle([
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
-        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('FONTSIZE',     (0, 0), (-1, -1), 8),
+        ('TOPPADDING',   (0, 0), (-1, -1), 6),
+        ('BOTTOMPADDING',(0, 0), (-1, -1), 4),
+        ('BOX',          (0, 0), (-1, -1), 0.5, colors.black),
+        ('INNERGRID',    (0, 0), (-1, -1), 0.3, colors.grey),
+        ('LEFTPADDING',  (0, 0), (-1, -1), 4),
     ]))
     elements.append(sig_table)
 
