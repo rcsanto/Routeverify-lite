@@ -550,7 +550,7 @@ else:
                     if workers_val != st.session_state.routes[route_idx].get('workers', ''):
                         st.session_state.routes[route_idx]['workers'] = workers_val
 
-                    btn_col1, btn_col2 = st.columns(2)
+                    btn_col1, btn_col2, btn_col3 = st.columns(3)
 
                     with btn_col1:
                         toggle_key = f"detail_open_{route_idx}"
@@ -578,6 +578,12 @@ else:
                                 st.warning(f"WLO error: {e}")
                         else:
                             st.button("📋 Work Left Out", disabled=True, key=f"dl_wlo_disabled_{route_idx}")
+
+                    with btn_col3:
+                        if st.button("🗑️ Delete", key=f"btn_delete_{route_idx}", type="secondary"):
+                            st.session_state.routes.pop(route_idx)
+                            st.session_state.detail_open.pop(f"detail_open_{route_idx}", None)
+                            st.rerun()
 
         # Detail views
         for col_idx in range(COLS):
