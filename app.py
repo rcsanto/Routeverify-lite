@@ -29,7 +29,297 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 st.set_page_config(page_title="RouteVerify - DSNY", layout="wide")
-st.title("RouteVerify Lite — DSNY Supervisor Dashboard")
+st.markdown("# 🗑️ RouteVerify — DSNY", unsafe_allow_html=False)
+
+st.markdown("""
+<style>
+/* ── Google Font ── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* ── Base ── */
+html, body, [class*="css"] {
+    font-family: 'Inter', sans-serif !important;
+}
+
+/* ── Hide Streamlit branding ── */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+
+/* ── Main container padding ── */
+.block-container {
+    padding-top: 1rem !important;
+    padding-bottom: 2rem !important;
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
+    max-width: 100% !important;
+}
+
+/* ── App title ── */
+h1 {
+    font-size: 1.4rem !important;
+    font-weight: 700 !important;
+    color: #1a6b2f !important;
+    margin-bottom: 0.5rem !important;
+}
+
+h2, h3 {
+    font-size: 1.1rem !important;
+    font-weight: 600 !important;
+    color: #1a3a1f !important;
+}
+
+/* ── Buttons — larger tap targets ── */
+.stButton > button {
+    border-radius: 10px !important;
+    padding: 0.55rem 1rem !important;
+    font-size: 0.88rem !important;
+    font-weight: 600 !important;
+    min-height: 44px !important;
+    width: 100% !important;
+    transition: all 0.15s ease !important;
+    border: none !important;
+}
+
+.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #1a6b2f, #2d9e4f) !important;
+    color: white !important;
+}
+
+.stButton > button[kind="primary"]:hover {
+    background: linear-gradient(135deg, #155826, #27894a) !important;
+    box-shadow: 0 4px 12px rgba(26,107,47,0.35) !important;
+    transform: translateY(-1px) !important;
+}
+
+.stButton > button[kind="secondary"] {
+    background: #f5f5f5 !important;
+    color: #333 !important;
+    border: 1px solid #ddd !important;
+}
+
+.stButton > button[kind="secondary"]:hover {
+    background: #ffe5e5 !important;
+    border-color: #e53935 !important;
+    color: #e53935 !important;
+}
+
+/* ── Download buttons ── */
+.stDownloadButton > button {
+    border-radius: 10px !important;
+    padding: 0.55rem 1rem !important;
+    font-size: 0.85rem !important;
+    font-weight: 600 !important;
+    min-height: 44px !important;
+    width: 100% !important;
+    background: linear-gradient(135deg, #1565c0, #1e88e5) !important;
+    color: white !important;
+    border: none !important;
+}
+
+/* ── Cards / containers ── */
+[data-testid="stVerticalBlock"] > [data-testid="stVerticalBlock"] {
+    background: white;
+    border-radius: 14px;
+    padding: 1rem;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    margin-bottom: 0.75rem;
+}
+
+/* ── Progress bar ── */
+.stProgress > div > div > div {
+    height: 10px !important;
+    border-radius: 5px !important;
+    background: linear-gradient(90deg, #1a6b2f, #4caf50) !important;
+}
+
+.stProgress > div > div {
+    background: #e0e0e0 !important;
+    border-radius: 5px !important;
+    height: 10px !important;
+}
+
+/* ── Text inputs ── */
+.stTextInput > div > div > input {
+    border-radius: 8px !important;
+    border: 1.5px solid #ddd !important;
+    padding: 0.5rem 0.75rem !important;
+    font-size: 0.9rem !important;
+    min-height: 44px !important;
+    transition: border-color 0.2s !important;
+}
+
+.stTextInput > div > div > input:focus {
+    border-color: #1a6b2f !important;
+    box-shadow: 0 0 0 2px rgba(26,107,47,0.15) !important;
+}
+
+/* ── Text area ── */
+.stTextArea > div > div > textarea {
+    border-radius: 8px !important;
+    border: 1.5px solid #ddd !important;
+    font-size: 0.88rem !important;
+    transition: border-color 0.2s !important;
+}
+
+.stTextArea > div > div > textarea:focus {
+    border-color: #1a6b2f !important;
+    box-shadow: 0 0 0 2px rgba(26,107,47,0.15) !important;
+}
+
+/* ── File uploader ── */
+[data-testid="stFileUploader"] {
+    border: 2px dashed #1a6b2f !important;
+    border-radius: 12px !important;
+    padding: 1rem !important;
+    background: #f8fdf9 !important;
+}
+
+/* ── Alerts ── */
+.stSuccess {
+    border-radius: 10px !important;
+    font-weight: 500 !important;
+}
+.stError {
+    border-radius: 10px !important;
+    font-weight: 500 !important;
+}
+.stWarning {
+    border-radius: 10px !important;
+    font-weight: 500 !important;
+}
+
+/* ── Sidebar ── */
+[data-testid="stSidebar"] {
+    background: #1a3a1f !important;
+}
+
+[data-testid="stSidebar"] * {
+    color: #e8f5e9 !important;
+}
+
+[data-testid="stSidebar"] .stTextInput > div > div > input {
+    background: #2d5a35 !important;
+    color: white !important;
+    border-color: #3d7a45 !important;
+}
+
+[data-testid="stSidebar"] .stButton > button {
+    background: #2d5a35 !important;
+    color: #e8f5e9 !important;
+    border: 1px solid #3d7a45 !important;
+}
+
+[data-testid="stSidebar"] .stCheckbox label {
+    color: #e8f5e9 !important;
+}
+
+/* ── Expander ── */
+[data-testid="stExpander"] {
+    border-radius: 12px !important;
+    border: 1px solid #e0e0e0 !important;
+    overflow: hidden !important;
+}
+
+[data-testid="stExpander"] summary {
+    font-weight: 600 !important;
+    font-size: 1rem !important;
+    padding: 0.75rem 1rem !important;
+    background: #f8fdf9 !important;
+}
+
+/* ── Dataframe ── */
+[data-testid="stDataFrame"] {
+    border-radius: 10px !important;
+    overflow: hidden !important;
+    font-size: 0.82rem !important;
+}
+
+/* ── Tabs ── */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 4px !important;
+    background: #f0f0f0 !important;
+    border-radius: 10px !important;
+    padding: 4px !important;
+}
+
+.stTabs [data-baseweb="tab"] {
+    border-radius: 8px !important;
+    padding: 0.4rem 1rem !important;
+    font-weight: 600 !important;
+    font-size: 0.85rem !important;
+    min-height: 40px !important;
+}
+
+.stTabs [aria-selected="true"] {
+    background: white !important;
+    color: #1a6b2f !important;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.12) !important;
+}
+
+/* ── Divider ── */
+hr {
+    border-color: #e0e0e0 !important;
+    margin: 1rem 0 !important;
+}
+
+/* ── Mobile responsive — single column on narrow screens ── */
+@media (max-width: 768px) {
+    .block-container {
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
+    }
+
+    h1 {
+        font-size: 1.15rem !important;
+    }
+
+    .stButton > button {
+        font-size: 0.82rem !important;
+        padding: 0.5rem 0.75rem !important;
+    }
+
+    /* Stack columns on mobile */
+    [data-testid="column"] {
+        min-width: 100% !important;
+        flex: 1 1 100% !important;
+    }
+}
+
+/* ── Checkbox — bigger touch target ── */
+.stCheckbox label {
+    font-size: 0.88rem !important;
+    min-height: 36px !important;
+    display: flex !important;
+    align-items: center !important;
+}
+
+/* ── Spinner ── */
+.stSpinner {
+    color: #1a6b2f !important;
+}
+
+/* ── Toast ── */
+[data-testid="stToast"] {
+    border-radius: 12px !important;
+    font-weight: 500 !important;
+}
+
+/* ── Select/date inputs ── */
+.stDateInput input, .stSelectbox select {
+    border-radius: 8px !important;
+    min-height: 44px !important;
+    font-size: 0.9rem !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<div style="background:linear-gradient(90deg,#1a6b2f,#2d9e4f);padding:0.6rem 1rem;border-radius:10px;margin-bottom:1rem;display:flex;align-items:center;justify-content:space-between;">
+  <span style="color:white;font-weight:700;font-size:1rem;">🗑️ RouteVerify Lite</span>
+  <span style="color:#c8e6c9;font-size:0.8rem;">DSNY Supervisor Dashboard</span>
+</div>
+""", unsafe_allow_html=True)
 
 # ─── SIDEBAR ───────────────────────────────────────────────────────────────────
 
