@@ -45,6 +45,43 @@ with st.sidebar:
         st.session_state.routes = []
         st.rerun()
 
+    st.divider()
+    st.subheader("🏢 Garage / Command")
+    garage_val = st.text_input("Garage", placeholder="e.g. Manhattan 1", key="garage_input")
+    if 'garage' not in st.session_state:
+        st.session_state.garage = ''
+    if garage_val != st.session_state.garage:
+        st.session_state.garage = garage_val
+
+    st.divider()
+    st.subheader("💾 Session")
+    # Save
+    if st.session_state.get('routes'):
+        save_data = []
+        for r in st.session_state.routes:
+            entry = {k: v for k, v in r.items() if k not in ('df', 'gps_streets')}
+            entry['df'] = r['df'].to_dict(orient='records') if hasattr(r.get('df'), 'to_dict') else []
+            save_data.append(entry)
+        save_json = json.dumps(save_data, indent=2)
+        st.download_button("💾 Save Session", data=save_json,
+                           file_name=f"routeverify_session_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
+                           mime="application/json", key="dl_save_session")
+    # Load
+    session_file = st.file_uploader("📂 Load Session", type=["json"], key="load_session_file")
+    if session_file:
+        try:
+            loaded = json.loads(session_file.read())
+            for entry in loaded:
+                if 'df' in entry and isinstance(entry['df'], list):
+                    entry['df'] = pd.DataFrame(entry['df'])
+                if 'gps_streets' not in entry:
+                    entry['gps_streets'] = set()
+            st.session_state.routes = loaded
+            st.success(f"Loaded {len(loaded)} routes.")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Failed to load session: {e}")
+
 if not _api_key or not _api_key.startswith("sk-ant"):
     st.warning("Enter your Anthropic API key in the sidebar to continue.")
     st.stop()
@@ -193,7 +230,7 @@ def generate_work_left_out(missed_df: pd.DataFrame, route_info: dict) -> bytes:
 
 # ─── DS-332 DAILY ROUTE ASSIGNMENT PDF ────────────────────────────────────────
 
-def generate_ds332_pdf(route_entries: list, date_str: str = None) -> bytes:
+def generate_ds332_pdf(route_entries: list, date_str: str = None, garage: str = '') -> bytes:
     """Generate DS-332 Daily Route Assignment PDF — landscape, matching actual DSNY form."""
     if not date_str:
         date_str = datetime.now().strftime("%m/%d/%Y")
@@ -219,6 +256,7 @@ def generate_ds332_pdf(route_entries: list, date_str: str = None) -> bytes:
     district  = first_cj.get('district', '')
     section_h = first_cj.get('section', '')
 
+    garage_text = f"   <b>GARAGE:</b> {garage}" if garage else ""
     hdr_data = [
         [
             Paragraph("NEW YORK CITY\nDEPARTMENT OF SANITATION", center_bold),
@@ -226,7 +264,8 @@ def generate_ds332_pdf(route_entries: list, date_str: str = None) -> bytes:
             Paragraph(
                 f"<b>DATE:</b> {date_str}          "
                 f"<b>DISTRICT:</b> {district}          "
-                f"<b>SECTION:</b> {section_h}",
+                f"<b>SECTION:</b> {section_h}"
+                f"{garage_text}",
                 left_sm
             ),
         ]
@@ -261,6 +300,15 @@ def generate_ds332_pdf(route_entries: list, date_str: str = None) -> bytes:
         total   = r.get('total', 0)
         missed  = total - done
         workers = r.get('workers', '').strip() or ''
+        shift_start = r.get('shift_start', '')
+        shift_end   = r.get('shift_end', '')
+        notes       = r.get('notes', '')
+        remarks_parts = []
+        if shift_start or shift_end:
+            remarks_parts.append(f"{shift_start}-{shift_end}")
+        if notes:
+            remarks_parts.append(notes)
+        remarks = ' '.join(remarks_parts).strip()
         table_data.append([
             str(i + 1),
             r.get('truck', ''),
@@ -272,7 +320,7 @@ def generate_ds332_pdf(route_entries: list, date_str: str = None) -> bytes:
             f"{pct}%",
             str(done),
             str(missed),
-            '',   # Remarks — blank for supervisor to fill
+            remarks,
         ])
 
     # Pad to at least 20 rows so form looks complete
@@ -488,6 +536,9 @@ with st.expander("➕ Add a Route", expanded=len(st.session_state.routes) == 0):
                             "total": total,
                             "pct": pct,
                             "workers": "",
+                            "shift_start": "",
+                            "shift_end": "",
+                            "notes": "",
                         }
                         st.session_state.routes.append(route_entry)
                         st.toast(f"✅ Truck {input_truck.strip()} / Route {input_route.strip()} added")
@@ -525,20 +576,63 @@ else:
             district = cj.get("district", "?")
             missed_count = total - done
 
-            if pct >= 100:
-                badge = "✅ Complete"
-            elif pct >= 80:
-                badge = "🟡 Partial"
-            else:
-                badge = "🔴 Needs Attention"
-
             with card_cols[col_idx]:
                 with st.container(border=True):
                     st.markdown(f"### 🚛 {truck} · Route {route_label}")
                     st.markdown(f"**Section:** {section} &nbsp;|&nbsp; **District:** {district}")
-                    st.markdown(f"**{badge}**")
+
+                    # Completion threshold alerts
+                    if pct < 70:
+                        st.error(f"🔴 {pct}% — Needs Attention")
+                    elif pct < 85:
+                        st.warning(f"🟡 {pct}% — Partial")
+                    else:
+                        st.success(f"✅ {pct}% — Good")
+
                     st.progress(pct / 100 if total > 0 else 0)
-                    st.markdown(f"**{pct}%** &nbsp;&nbsp; ✅ {done} done &nbsp; ❌ {missed_count} missed")
+                    st.markdown(f"✅ {done} done &nbsp; ❌ {missed_count} missed")
+
+                    # Inline truck / route edit
+                    edit_truck_col, edit_route_col = st.columns(2)
+                    with edit_truck_col:
+                        new_truck = st.text_input(
+                            "Truck #",
+                            value=st.session_state.routes[route_idx].get('truck', ''),
+                            key=f"edit_truck_{route_idx}",
+                            label_visibility="visible",
+                        )
+                        if new_truck != st.session_state.routes[route_idx].get('truck', ''):
+                            st.session_state.routes[route_idx]['truck'] = new_truck
+                    with edit_route_col:
+                        new_route = st.text_input(
+                            "Route #",
+                            value=st.session_state.routes[route_idx].get('route', ''),
+                            key=f"edit_route_{route_idx}",
+                            label_visibility="visible",
+                        )
+                        if new_route != st.session_state.routes[route_idx].get('route', ''):
+                            st.session_state.routes[route_idx]['route'] = new_route
+
+                    # Shift time fields
+                    time_col1, time_col2 = st.columns(2)
+                    with time_col1:
+                        shift_start_val = st.text_input(
+                            "Start Time",
+                            value=st.session_state.routes[route_idx].get('shift_start', ''),
+                            placeholder="06:00",
+                            key=f"shift_start_{route_idx}",
+                        )
+                        if shift_start_val != st.session_state.routes[route_idx].get('shift_start', ''):
+                            st.session_state.routes[route_idx]['shift_start'] = shift_start_val
+                    with time_col2:
+                        shift_end_val = st.text_input(
+                            "End Time",
+                            value=st.session_state.routes[route_idx].get('shift_end', ''),
+                            placeholder="14:00",
+                            key=f"shift_end_{route_idx}",
+                        )
+                        if shift_end_val != st.session_state.routes[route_idx].get('shift_end', ''):
+                            st.session_state.routes[route_idx]['shift_end'] = shift_end_val
 
                     # Sanitation Workers input
                     workers_val = st.text_input(
@@ -549,6 +643,17 @@ else:
                     )
                     if workers_val != st.session_state.routes[route_idx].get('workers', ''):
                         st.session_state.routes[route_idx]['workers'] = workers_val
+
+                    # Route notes
+                    notes_val = st.text_area(
+                        "📝 Notes",
+                        value=st.session_state.routes[route_idx].get('notes', ''),
+                        placeholder="Road closures, driver issues, etc.",
+                        key=f"notes_{route_idx}",
+                        height=68,
+                    )
+                    if notes_val != st.session_state.routes[route_idx].get('notes', ''):
+                        st.session_state.routes[route_idx]['notes'] = notes_val
 
                     btn_col1, btn_col2, btn_col3 = st.columns(3)
 
@@ -677,8 +782,10 @@ if n_routes > 0:
 
     with col_ds332:
         try:
+            shift_date = st.date_input("Shift Date", value=datetime.now().date(), key="ds332_date")
+            date_str = shift_date.strftime("%m/%d/%Y")
             today_str = datetime.now().strftime("%Y%m%d")
-            ds332_all_bytes = generate_ds332_pdf(routes)
+            ds332_all_bytes = generate_ds332_pdf(routes, date_str=date_str, garage=st.session_state.get('garage', ''))
             st.download_button("📄 DS-332", data=ds332_all_bytes,
                                file_name=f"DS332_All_{today_str}.pdf", mime="application/pdf", key="dl_ds332_all")
         except Exception as e:
