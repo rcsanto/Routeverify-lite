@@ -1143,56 +1143,59 @@ else:
                 tab1, tab2 = st.tabs(["📋 ITSA Breakdown", "🗺️ Navigation"])
 
                 with tab1:
-                    # Header row
-                    hdr1, hdr2, hdr3, hdr4, hdr5, hdr6 = st.columns([0.5, 2, 1.5, 1.5, 0.5, 1.5])
-                    with hdr1: st.markdown("**ITSA #**")
-                    with hdr2: st.markdown("**Street**")
-                    with hdr3: st.markdown("**From**")
-                    with hdr4: st.markdown("**To**")
-                    with hdr5: st.markdown("**Side**")
-                    with hdr6: st.markdown("**Status**")
-                    st.divider()
-
+                    # Build display df reflecting current overrides
+                    manual_overrides = r.get('manual_overrides', {})
+                    display_rows = []
                     for _, row in df.iterrows():
-                        itsa_num = row["ITSA #"]
-                        street = row["Street"]
-                        from_cross = row["From"]
-                        to_cross = row["To"]
-                        side = row["Side"]
-                        gps_status = row["Status"]
+                        itsa_num = str(row['ITSA #'])
+                        gps_status = row['Status']
+                        if '✅' in gps_status:
+                            status = '✅ GPS'
+                        elif manual_overrides.get(itsa_num, False):
+                            status = '✅ MANUAL'
+                        else:
+                            status = '❌ SKIPPED'
+                        display_rows.append({
+                            'ITSA #': row['ITSA #'],
+                            'Street': row['Street'],
+                            'From': row['From'],
+                            'To': row['To'],
+                            'Side': row['Side'],
+                            'Status': status
+                        })
+                    display_df = pd.DataFrame(display_rows)
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-                        col1, col2, col3, col4, col5, col6 = st.columns([0.5, 2, 1.5, 1.5, 0.5, 1.5])
-                        with col1:
-                            st.write(itsa_num)
-                        with col2:
-                            st.write(street)
-                        with col3:
-                            st.write(from_cross)
-                        with col4:
-                            st.write(to_cross)
-                        with col5:
-                            st.write(side)
-                        with col6:
-                            if "DONE" in gps_status:
-                                st.markdown("✅ GPS")
-                            else:
-                                is_manual = manual_overrides.get(str(itsa_num), False)
-                                if is_manual:
-                                    st.markdown('<span style="color:green">✅ MANUAL</span>', unsafe_allow_html=True)
-                                cb_key = f"manual_{route_idx}_{itsa_num}"
-                                st.checkbox(
-                                    "Mark done",
-                                    value=is_manual,
-                                    key=cb_key,
-                                    on_change=on_manual_override_change,
-                                    args=(route_idx, itsa_num),
-                                )
-
+                    # Count for summary
                     manual_count = sum(1 for v in manual_overrides.values() if v)
-                    if manual_count > 0:
-                        st.markdown(f"**{done} of {total} ITSAs completed ({pct}%) — {manual_count} manually marked**")
-                    else:
-                        st.markdown(f"**{done} of {total} ITSAs completed ({pct}%)**")
+                    gps_done = len([row for row in display_rows if row['Status'] == '✅ GPS'])
+                    total_done = gps_done + manual_count
+                    total_rows = len(display_rows)
+                    st.markdown(f"**{total_done} of {total_rows} ITSAs completed ({r.get('pct',0)}%)**")
+
+                    # Manual override section — only show skipped/manual rows
+                    skipped_rows = [row for row in display_rows if row['Status'] in ('❌ SKIPPED', '✅ MANUAL')]
+                    if skipped_rows:
+                        st.markdown("---")
+                        st.markdown("**✏️ Manual Overrides** *(supervisor verification)*")
+                        for row in skipped_rows:
+                            itsa_num = str(row['ITSA #'])
+                            is_manual = manual_overrides.get(itsa_num, False)
+                            new_val = st.checkbox(
+                                f"ITSA {row['ITSA #']} — {row['Street']} ({row['From']} → {row['To']})",
+                                value=is_manual,
+                                key=f"manual_{route_idx}_{row['ITSA #']}"
+                            )
+                            if new_val != is_manual:
+                                st.session_state.routes[route_idx]['manual_overrides'][itsa_num] = new_val
+                                # Recalculate
+                                new_manual_count = sum(1 for v in st.session_state.routes[route_idx]['manual_overrides'].values() if v)
+                                gps_count = len(df[df['Status'].str.contains('DONE')])
+                                new_done = gps_count + new_manual_count
+                                new_pct = round(new_done / len(df) * 100, 1) if len(df) > 0 else 0.0
+                                st.session_state.routes[route_idx]['done'] = new_done
+                                st.session_state.routes[route_idx]['pct'] = new_pct
+                                st.rerun()
 
                 with tab2:
                     all_streets = df["Street"].tolist()
