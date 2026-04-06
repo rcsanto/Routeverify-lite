@@ -76,6 +76,8 @@ with st.sidebar:
                     entry['df'] = pd.DataFrame(entry['df'])
                 if 'gps_streets' not in entry:
                     entry['gps_streets'] = set()
+                if 'manual_overrides' not in entry:
+                    entry['manual_overrides'] = {}
             st.session_state.routes = loaded
             st.success(f"Loaded {len(loaded)} routes.")
             st.rerun()
@@ -228,6 +230,18 @@ def generate_work_left_out(missed_df: pd.DataFrame, route_info: dict) -> bytes:
     return buf.getvalue()
 
 
+def get_truly_missed_df(r: dict) -> pd.DataFrame:
+    """Return SKIPPED rows that are NOT manually overridden."""
+    df = r["df"]
+    manual_overrides = r.get('manual_overrides', {})
+    manually_done_keys = {k for k, v in manual_overrides.items() if v}
+    missed_df = df[
+        df["Status"].str.contains("SKIPPED") &
+        ~df["ITSA #"].astype(str).isin(manually_done_keys)
+    ]
+    return missed_df
+
+
 # ─── DS-332 DAILY ROUTE ASSIGNMENT PDF ────────────────────────────────────────
 
 def generate_ds332_pdf(route_entries: list, date_str: str = None, garage: str = '') -> bytes:
@@ -303,12 +317,18 @@ def generate_ds332_pdf(route_entries: list, date_str: str = None, garage: str = 
         shift_start = r.get('shift_start', '')
         shift_end   = r.get('shift_end', '')
         notes       = r.get('notes', '')
+        manual_overrides = r.get('manual_overrides', {})
+        manual_count = sum(1 for v in manual_overrides.values() if v)
+
         remarks_parts = []
         if shift_start or shift_end:
             remarks_parts.append(f"{shift_start}-{shift_end}")
         if notes:
             remarks_parts.append(notes)
+        if manual_count > 0:
+            remarks_parts.append(f"({manual_count} manual)")
         remarks = ' '.join(remarks_parts).strip()
+
         table_data.append([
             str(i + 1),
             r.get('truck', ''),
@@ -476,6 +496,25 @@ def chunk_list(lst: list, n: int) -> List[list]:
     return [lst[i:i+n] for i in range(0, len(lst), n)]
 
 
+# ─── MANUAL OVERRIDE CALLBACK ──────────────────────────────────────────────────
+
+def on_manual_override_change(route_idx: int, itsa_num):
+    key = f"manual_{route_idx}_{itsa_num}"
+    new_val = st.session_state.get(key, False)
+    route = st.session_state.routes[route_idx]
+    overrides = route.get('manual_overrides', {})
+    overrides[str(itsa_num)] = new_val
+    route['manual_overrides'] = overrides
+    # Recalculate
+    df = route['df']
+    gps_done = len(df[df['Status'].str.contains('DONE')])
+    manual_done = sum(1 for v in overrides.values() if v)
+    total = route['total']
+    done = gps_done + manual_done
+    route['done'] = done
+    route['pct'] = round(done / total * 100, 1) if total > 0 else 0.0
+
+
 # ─── UPLOAD PANEL ─────────────────────────────────────────────────────────────
 
 with st.expander("➕ Add a Route", expanded=len(st.session_state.routes) == 0):
@@ -539,12 +578,107 @@ with st.expander("➕ Add a Route", expanded=len(st.session_state.routes) == 0):
                             "shift_start": "",
                             "shift_end": "",
                             "notes": "",
+                            "manual_overrides": {},
                         }
                         st.session_state.routes.append(route_entry)
                         st.toast(f"✅ Truck {input_truck.strip()} / Route {input_route.strip()} added")
                         st.rerun()
                 elif not claude_json:
                     st.error("Failed to parse route sheet. Please try again.")
+
+    # ─── BATCH UPLOAD SECTION ───────────────────────────────────────────────────
+    st.divider()
+    st.markdown("### 📸 Batch Upload Multiple Routes")
+
+    batch_route_files = st.file_uploader(
+        "Upload multiple DS-659 route sheets",
+        type=["jpg", "jpeg", "png", "pdf"],
+        accept_multiple_files=True,
+        key="batch_route_files"
+    )
+    batch_gps_file = st.file_uploader(
+        "Upload Rastrac GPS CSV (shared for all)",
+        type=["csv"],
+        key="batch_gps_file"
+    )
+    process_batch_btn = st.button("🚀 Process Batch", type="primary", key="btn_process_batch")
+
+    if process_batch_btn:
+        batch_errors = []
+        if not batch_route_files:
+            batch_errors.append("Please upload at least one route sheet file.")
+        if not batch_gps_file:
+            batch_errors.append("Please upload a GPS CSV file for the batch.")
+        if batch_errors:
+            for e in batch_errors:
+                st.error(e)
+        else:
+            # Parse shared GPS once
+            shared_gps_streets = set()
+            try:
+                batch_gps_df = pd.read_csv(batch_gps_file)
+                shared_gps_streets = parse_rastrac_csv(batch_gps_df)
+            except Exception as e:
+                st.error(f"Failed to load GPS file: {e}")
+                shared_gps_streets = None
+
+            if shared_gps_streets is not None:
+                processed_count = 0
+                batch_progress = st.progress(0)
+                batch_status = st.empty()
+
+                for i, batch_file in enumerate(batch_route_files):
+                    truck_auto = f"TBD-{i + 1}"
+                    route_auto = f"BATCH-{i + 1}"
+                    batch_status.text(f"Processing {i + 1}/{len(batch_route_files)}: {batch_file.name}...")
+
+                    with st.spinner(f"Processing file {i + 1}/{len(batch_route_files)}: {batch_file.name}"):
+                        file_bytes = batch_file.read()
+                        ext = batch_file.name.split('.')[-1].lower()
+                        if ext == 'pdf':
+                            claude_json = process_pdf_with_claude(file_bytes)
+                        else:
+                            media_map = {'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png'}
+                            claude_json = process_image_with_claude(file_bytes, media_map.get(ext, 'image/jpeg'))
+
+                        if claude_json:
+                            itsas = claude_json.get('itsas', [])
+                            if not itsas:
+                                st.warning(f"No ITSAs found in {batch_file.name} — skipping.")
+                            else:
+                                df = verify_itsas_against_gps(itsas, shared_gps_streets)
+                                total = len(df)
+                                done = len(df[df['Status'].str.contains('DONE')])
+                                pct = round(done / total * 100, 1) if total > 0 else 0.0
+                                route_entry = {
+                                    "truck": truck_auto,
+                                    "route": route_auto,
+                                    "claude_json": claude_json,
+                                    "gps_streets": shared_gps_streets,
+                                    "df": df,
+                                    "done": done,
+                                    "total": total,
+                                    "pct": pct,
+                                    "workers": "",
+                                    "shift_start": "",
+                                    "shift_end": "",
+                                    "notes": "",
+                                    "manual_overrides": {},
+                                }
+                                st.session_state.routes.append(route_entry)
+                                processed_count += 1
+                        else:
+                            st.warning(f"Failed to parse {batch_file.name} — skipping.")
+
+                    batch_progress.progress((i + 1) / len(batch_route_files))
+
+                batch_status.empty()
+                batch_progress.empty()
+                if processed_count > 0:
+                    st.success(f"Processed {processed_count} route{'s' if processed_count != 1 else ''}")
+                    st.rerun()
+                else:
+                    st.error("No routes were successfully processed.")
 
 
 # ─── DASHBOARD ────────────────────────────────────────────────────────────────
@@ -575,6 +709,8 @@ else:
             section = cj.get("section", "?")
             district = cj.get("district", "?")
             missed_count = total - done
+            manual_overrides = r.get('manual_overrides', {})
+            manual_count = sum(1 for v in manual_overrides.values() if v)
 
             with card_cols[col_idx]:
                 with st.container(border=True):
@@ -590,7 +726,12 @@ else:
                         st.success(f"✅ {pct}% — Good")
 
                     st.progress(pct / 100 if total > 0 else 0)
-                    st.markdown(f"✅ {done} done &nbsp; ❌ {missed_count} missed")
+
+                    # Show manual count if any
+                    if manual_count > 0:
+                        st.markdown(f"✅ {done} done ({manual_count} manual) &nbsp; ❌ {missed_count} missed")
+                    else:
+                        st.markdown(f"✅ {done} done &nbsp; ❌ {missed_count} missed")
 
                     # Inline truck / route edit
                     edit_truck_col, edit_route_col = st.columns(2)
@@ -666,7 +807,7 @@ else:
                             st.rerun()
 
                     with btn_col2:
-                        missed_df = r["df"][r["df"]["Status"].str.contains("SKIPPED")]
+                        missed_df = get_truly_missed_df(r)
                         if not missed_df.empty and os.path.exists(TEMPLATE_PATH):
                             try:
                                 wlo_bytes = generate_work_left_out(missed_df, cj)
@@ -706,19 +847,68 @@ else:
                 total = r["total"]
                 pct = r["pct"]
                 borough = infer_borough(cj)
+                manual_overrides = r.get('manual_overrides', {})
 
                 st.markdown(f"---\n#### 🚛 {truck} · Route {route_label} — Detail View")
                 tab1, tab2 = st.tabs(["📋 ITSA Breakdown", "🗺️ Navigation"])
 
                 with tab1:
-                    display_df = df[["ITSA #", "Street", "From", "To", "Side", "Status"]].copy()
-                    st.dataframe(display_df, use_container_width=True, hide_index=True)
-                    st.markdown(f"**{done} of {total} ITSAs completed ({pct}%)**")
+                    # Header row
+                    hdr1, hdr2, hdr3, hdr4, hdr5, hdr6 = st.columns([0.5, 2, 1.5, 1.5, 0.5, 1.5])
+                    with hdr1: st.markdown("**ITSA #**")
+                    with hdr2: st.markdown("**Street**")
+                    with hdr3: st.markdown("**From**")
+                    with hdr4: st.markdown("**To**")
+                    with hdr5: st.markdown("**Side**")
+                    with hdr6: st.markdown("**Status**")
+                    st.divider()
+
+                    for _, row in df.iterrows():
+                        itsa_num = row["ITSA #"]
+                        street = row["Street"]
+                        from_cross = row["From"]
+                        to_cross = row["To"]
+                        side = row["Side"]
+                        gps_status = row["Status"]
+
+                        col1, col2, col3, col4, col5, col6 = st.columns([0.5, 2, 1.5, 1.5, 0.5, 1.5])
+                        with col1:
+                            st.write(itsa_num)
+                        with col2:
+                            st.write(street)
+                        with col3:
+                            st.write(from_cross)
+                        with col4:
+                            st.write(to_cross)
+                        with col5:
+                            st.write(side)
+                        with col6:
+                            if "DONE" in gps_status:
+                                st.markdown("✅ GPS")
+                            else:
+                                is_manual = manual_overrides.get(str(itsa_num), False)
+                                if is_manual:
+                                    st.markdown('<span style="color:green">✅ MANUAL</span>', unsafe_allow_html=True)
+                                cb_key = f"manual_{route_idx}_{itsa_num}"
+                                st.checkbox(
+                                    "Mark done",
+                                    value=is_manual,
+                                    key=cb_key,
+                                    on_change=on_manual_override_change,
+                                    args=(route_idx, itsa_num),
+                                )
+
+                    manual_count = sum(1 for v in manual_overrides.values() if v)
+                    if manual_count > 0:
+                        st.markdown(f"**{done} of {total} ITSAs completed ({pct}%) — {manual_count} manually marked**")
+                    else:
+                        st.markdown(f"**{done} of {total} ITSAs completed ({pct}%)**")
 
                 with tab2:
                     all_streets = df["Street"].tolist()
-                    missed_rows = df[df["Status"].str.contains("SKIPPED")]
-                    missed_streets = missed_rows["Street"].tolist()
+                    # Use truly missed (not manually overridden) for nav
+                    truly_missed_df = get_truly_missed_df(r)
+                    missed_streets = truly_missed_df["Street"].tolist()
 
                     st.subheader("🗺️ Ride Full Route")
                     for chunk_idx, chunk in enumerate(chunk_list(all_streets, 6)):
@@ -739,7 +929,7 @@ else:
                                 end_n = start_n + len(chunk) - 1
                                 st.markdown(f"[Missed Group {chunk_idx + 1} (streets {start_n}–{end_n}) →]({url})")
                         st.markdown("**Individual missed ITSAs:**")
-                        for _, row in missed_rows.iterrows():
+                        for _, row in truly_missed_df.iterrows():
                             nav_url = ("https://www.google.com/maps/dir/My+Location/"
                                        + row["Street"].replace(" ", "+")
                                        + ",+" + borough.replace(" ", "+").replace(",", ""))
@@ -767,7 +957,7 @@ if n_routes > 0:
                 zip_buf = io.BytesIO()
                 with zipfile.ZipFile(zip_buf, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
                     for r in routes:
-                        missed_df = r["df"][r["df"]["Status"].str.contains("SKIPPED")]
+                        missed_df = get_truly_missed_df(r)
                         if not missed_df.empty:
                             cj = r["claude_json"]
                             wlo_bytes = generate_work_left_out(missed_df, cj)
