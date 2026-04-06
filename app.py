@@ -249,12 +249,18 @@ h2, h3 {
     font-weight: 600 !important;
     font-size: 0.85rem !important;
     min-height: 40px !important;
+    color: #333333 !important;
 }
 
 .stTabs [aria-selected="true"] {
     background: white !important;
     color: #1a6b2f !important;
     box-shadow: 0 1px 4px rgba(0,0,0,0.12) !important;
+}
+
+.stTabs [aria-selected="false"] {
+    color: #555555 !important;
+    background: transparent !important;
 }
 
 /* ── Divider ── */
@@ -1140,6 +1146,25 @@ else:
                 manual_overrides = r.get('manual_overrides', {})
 
                 st.markdown(f"---\n#### 🚛 {truck} · Route {route_label} — Detail View")
+
+                # Big completion header
+                bar_color = "#e53935" if pct < 70 else "#ff9800" if pct < 85 else "#2e7d32"
+                st.markdown(f"""
+<div style="background:white;border-radius:12px;padding:1rem;margin-bottom:1rem;box-shadow:0 2px 8px rgba(0,0,0,0.08);border-left:5px solid {bar_color};">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
+        <span style="font-size:1.1rem;font-weight:700;color:#222;">Route {route_label} — Truck {truck}</span>
+        <span style="font-size:1.4rem;font-weight:800;color:{bar_color};">{pct}%</span>
+    </div>
+    <div style="background:#e0e0e0;border-radius:6px;height:12px;overflow:hidden;">
+        <div style="background:{bar_color};width:{pct}%;height:100%;border-radius:6px;transition:width 0.3s;"></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;margin-top:0.4rem;">
+        <span style="font-size:0.82rem;color:#555;">✅ {done} done &nbsp; ❌ {total-done} missed</span>
+        <span style="font-size:0.82rem;color:#555;">Section: {cj.get('section','?')} | District: {cj.get('district','?')}</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
                 tab1, tab2 = st.tabs(["📋 ITSA Breakdown", "🗺️ Navigation"])
 
                 with tab1:
@@ -1164,7 +1189,46 @@ else:
                             'Status': status
                         })
                     display_df = pd.DataFrame(display_rows)
-                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+                    # Build colored HTML table
+                    html_rows = ""
+                    for row in display_rows:
+                        if '✅' in row['Status']:
+                            bg = '#e8f5e9'
+                            text_color = '#1b5e20'
+                        else:
+                            bg = '#ffebee'
+                            text_color = '#b71c1c'
+                        html_rows += f"""
+    <tr style="background:{bg};">
+        <td style="padding:6px 10px;color:{text_color};font-weight:600;">{row['ITSA #']}</td>
+        <td style="padding:6px 10px;color:#222;">{row['Street']}</td>
+        <td style="padding:6px 10px;color:#555;">{row['From']}</td>
+        <td style="padding:6px 10px;color:#555;">{row['To']}</td>
+        <td style="padding:6px 10px;color:#555;text-align:center;">{row['Side']}</td>
+        <td style="padding:6px 10px;font-weight:700;color:{text_color};">{row['Status']}</td>
+    </tr>"""
+
+                    html_table = f"""
+<div style="overflow-x:auto;border-radius:10px;border:1px solid #e0e0e0;margin-bottom:1rem;">
+<table style="width:100%;border-collapse:collapse;font-size:0.85rem;font-family:Inter,sans-serif;">
+    <thead>
+        <tr style="background:#1a6b2f;color:white;">
+            <th style="padding:8px 10px;text-align:left;">ITSA #</th>
+            <th style="padding:8px 10px;text-align:left;">Street</th>
+            <th style="padding:8px 10px;text-align:left;">From</th>
+            <th style="padding:8px 10px;text-align:left;">To</th>
+            <th style="padding:8px 10px;text-align:center;">Side</th>
+            <th style="padding:8px 10px;text-align:left;">Status</th>
+        </tr>
+    </thead>
+    <tbody>
+        {html_rows}
+    </tbody>
+</table>
+</div>
+"""
+                    st.markdown(html_table, unsafe_allow_html=True)
 
                     # Count for summary
                     manual_count = sum(1 for v in manual_overrides.values() if v)
@@ -1177,25 +1241,25 @@ else:
                     skipped_rows = [row for row in display_rows if row['Status'] in ('❌ SKIPPED', '✅ MANUAL')]
                     if skipped_rows:
                         st.markdown("---")
-                        st.markdown("**✏️ Manual Overrides** *(supervisor verification)*")
-                        for row in skipped_rows:
-                            itsa_num = str(row['ITSA #'])
-                            is_manual = manual_overrides.get(itsa_num, False)
-                            new_val = st.checkbox(
-                                f"ITSA {row['ITSA #']} — {row['Street']} ({row['From']} → {row['To']})",
-                                value=is_manual,
-                                key=f"manual_{route_idx}_{row['ITSA #']}"
-                            )
-                            if new_val != is_manual:
-                                st.session_state.routes[route_idx]['manual_overrides'][itsa_num] = new_val
-                                # Recalculate
-                                new_manual_count = sum(1 for v in st.session_state.routes[route_idx]['manual_overrides'].values() if v)
-                                gps_count = len(df[df['Status'].str.contains('DONE')])
-                                new_done = gps_count + new_manual_count
-                                new_pct = round(new_done / len(df) * 100, 1) if len(df) > 0 else 0.0
-                                st.session_state.routes[route_idx]['done'] = new_done
-                                st.session_state.routes[route_idx]['pct'] = new_pct
-                                st.rerun()
+                        with st.expander(f"✏️ Manual Overrides — {len([r2 for r2 in skipped_rows if '✅' in r2['Status']])} marked done, {len([r2 for r2 in skipped_rows if '❌' in r2['Status']])} remaining", expanded=False):
+                            for row in skipped_rows:
+                                itsa_num = str(row['ITSA #'])
+                                is_manual = manual_overrides.get(itsa_num, False)
+                                new_val = st.checkbox(
+                                    f"ITSA {row['ITSA #']} — {row['Street']} ({row['From']} → {row['To']})",
+                                    value=is_manual,
+                                    key=f"manual_{route_idx}_{row['ITSA #']}"
+                                )
+                                if new_val != is_manual:
+                                    st.session_state.routes[route_idx]['manual_overrides'][itsa_num] = new_val
+                                    # Recalculate
+                                    new_manual_count = sum(1 for v in st.session_state.routes[route_idx]['manual_overrides'].values() if v)
+                                    gps_count = len(df[df['Status'].str.contains('DONE')])
+                                    new_done = gps_count + new_manual_count
+                                    new_pct = round(new_done / len(df) * 100, 1) if len(df) > 0 else 0.0
+                                    st.session_state.routes[route_idx]['done'] = new_done
+                                    st.session_state.routes[route_idx]['pct'] = new_pct
+                                    st.rerun()
 
                 with tab2:
                     all_streets = df["Street"].tolist()
@@ -1208,25 +1272,25 @@ else:
                         start_itsa = chunk_idx * 6 + 1
                         end_itsa = start_itsa + len(chunk) - 1
                         url = build_maps_url(chunk, borough)
-                        st.markdown(f"[Group {chunk_idx + 1} (ITSAs {start_itsa}–{end_itsa}) →]({url})")
+                        st.markdown(f"""<a href="{url}" target="_blank" style="display:block;background:linear-gradient(135deg,#1565c0,#1e88e5);color:white;padding:0.6rem 1rem;border-radius:10px;text-decoration:none;font-weight:600;font-size:0.88rem;margin-bottom:0.5rem;text-align:center;">🗺️ Group {chunk_idx + 1} (ITSAs {start_itsa}–{end_itsa}) →</a>""", unsafe_allow_html=True)
 
                     st.subheader("🔴 Missed Streets Only")
                     if missed_streets:
                         if len(missed_streets) <= 6:
                             url = build_maps_url(missed_streets, borough)
-                            st.markdown(f"[Navigate All Missed ({len(missed_streets)} streets) →]({url})")
+                            st.markdown(f"""<a href="{url}" target="_blank" style="display:block;background:linear-gradient(135deg,#b71c1c,#e53935);color:white;padding:0.6rem 1rem;border-radius:10px;text-decoration:none;font-weight:600;font-size:0.88rem;margin-bottom:0.5rem;text-align:center;">🔴 Navigate All Missed ({len(missed_streets)} streets) →</a>""", unsafe_allow_html=True)
                         else:
                             for chunk_idx, chunk in enumerate(chunk_list(missed_streets, 6)):
                                 url = build_maps_url(chunk, borough)
                                 start_n = chunk_idx * 6 + 1
                                 end_n = start_n + len(chunk) - 1
-                                st.markdown(f"[Missed Group {chunk_idx + 1} (streets {start_n}–{end_n}) →]({url})")
+                                st.markdown(f"""<a href="{url}" target="_blank" style="display:block;background:linear-gradient(135deg,#b71c1c,#e53935);color:white;padding:0.6rem 1rem;border-radius:10px;text-decoration:none;font-weight:600;font-size:0.88rem;margin-bottom:0.5rem;text-align:center;">🔴 Missed Group {chunk_idx + 1} (streets {start_n}–{end_n}) →</a>""", unsafe_allow_html=True)
                         st.markdown("**Individual missed ITSAs:**")
                         for _, row in truly_missed_df.iterrows():
                             nav_url = ("https://www.google.com/maps/dir/My+Location/"
                                        + row["Street"].replace(" ", "+")
                                        + ",+" + borough.replace(" ", "+").replace(",", ""))
-                            st.markdown(f"ITSA {row['ITSA #']} — {row['Street']} ({row['From']} → {row['To']}) [Navigate]({nav_url})")
+                            st.markdown(f"""<a href="{nav_url}" target="_blank" style="display:flex;justify-content:space-between;align-items:center;background:#fff3e0;border:1px solid #ff9800;color:#333;padding:0.5rem 0.75rem;border-radius:8px;text-decoration:none;font-size:0.85rem;margin-bottom:0.35rem;"><span>❌ ITSA {row['ITSA #']} — {row['Street']}<br><small style='color:#666;'>{row['From']} → {row['To']}</small></span><span style='color:#e65100;font-weight:700;'>Navigate →</span></a>""", unsafe_allow_html=True)
                     else:
                         st.success("No missed streets — all ITSAs completed! 🎉")
                 st.markdown("---")
