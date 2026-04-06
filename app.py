@@ -1190,45 +1190,17 @@ else:
                         })
                     display_df = pd.DataFrame(display_rows)
 
-                    # Build colored HTML table
-                    html_rows = ""
-                    for row in display_rows:
-                        if '✅' in row['Status']:
-                            bg = '#e8f5e9'
-                            text_color = '#1b5e20'
-                        else:
-                            bg = '#ffebee'
-                            text_color = '#b71c1c'
-                        html_rows += f"""
-    <tr style="background:{bg};">
-        <td style="padding:6px 10px;color:{text_color};font-weight:600;">{row['ITSA #']}</td>
-        <td style="padding:6px 10px;color:#222;">{row['Street']}</td>
-        <td style="padding:6px 10px;color:#555;">{row['From']}</td>
-        <td style="padding:6px 10px;color:#555;">{row['To']}</td>
-        <td style="padding:6px 10px;color:#555;text-align:center;">{row['Side']}</td>
-        <td style="padding:6px 10px;font-weight:700;color:{text_color};">{row['Status']}</td>
-    </tr>"""
+                    # Build color-coded dataframe using pandas Styler
+                    display_df = pd.DataFrame(display_rows)
 
-                    html_table = f"""
-<div style="overflow-x:auto;border-radius:10px;border:1px solid #e0e0e0;margin-bottom:1rem;">
-<table style="width:100%;border-collapse:collapse;font-size:0.85rem;font-family:Inter,sans-serif;">
-    <thead>
-        <tr style="background:#1a6b2f;color:white;">
-            <th style="padding:8px 10px;text-align:left;">ITSA #</th>
-            <th style="padding:8px 10px;text-align:left;">Street</th>
-            <th style="padding:8px 10px;text-align:left;">From</th>
-            <th style="padding:8px 10px;text-align:left;">To</th>
-            <th style="padding:8px 10px;text-align:center;">Side</th>
-            <th style="padding:8px 10px;text-align:left;">Status</th>
-        </tr>
-    </thead>
-    <tbody>
-        {html_rows}
-    </tbody>
-</table>
-</div>
-"""
-                    st.markdown(html_table, unsafe_allow_html=True)
+                    def _style_itsa_row(row):
+                        if '✅' in str(row['Status']):
+                            return ['background-color: #e8f5e9; color: #1b5e20'] * len(row)
+                        else:
+                            return ['background-color: #ffebee; color: #b71c1c'] * len(row)
+
+                    styled_df = display_df.style.apply(_style_itsa_row, axis=1)
+                    st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
                     # Count for summary
                     manual_count = sum(1 for v in manual_overrides.values() if v)
